@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: ['*']
+  pull_request:
+    branches: ['*']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build C extension
+        run: python setup.py build_ext --inplace
+
+      - name: Run smoke tests
+        run: python test_smoke.py --quick
+
+  roofline-report:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build C extension
+        run: python setup.py build_ext --inplace
+
+      - name: Run full smoke tests (with measurement)
+        run: python test_smoke.py
+
+      - name: Generate roofline report (all configs)
+        run: |
+          python roofline.py --all-configs --json roofline_report.json 2>&1 | tee roofline_output.txt
+
+      - name: Generate comparison report (Python vs C)
+        run: |
+          python roofline.py --all-configs --compare-c --json roofline_compare.json 2>&1 | tee roofline_compare.txt
+
+      - name: Post summary to job
+        if: always()
+        run: |
+          echo "## Roofline Analysis Report" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          # Extract summary table and key insights
+          python -c "
+          import json, sys
+          with open('roofline_report.json') as f:
+              data = json.load(f)
+          cpu = data['cpu']
+          bw = data['bandwidth']
+          print(f\"CPU: {cpu['model']}\")
+          print(f\"Peak: {cpu['peak_gflops']:.1f} GFLOPS | DRAM BW: {bw['raw_gbs']:.1f} GB/s\")
+          print()
+          print(f\"{'Config':<20} {'Params':>8} {'ms/step':>10} {'GFLOPS':>10} {'Eff%':>8} {'Bound':>8}\")
+          print('-' * 66)
+          for r in data['results']:
+              c = r['config']
+              label = f\"e{c['n_embd']}_L{c['n_layer']}_b{c['block_size']}\"
+              ms = f\"{r['step_time_ms']:.1f}\" if 'step_time_ms' in r else '-'
+              gf = f\"{r['achieved_gflops']:.4f}\" if 'achieved_gflops' in r else '-'
+              eff = f\"{r['efficiency_pct']:.3f}\" if 'efficiency_pct' in r else '-'
+              bnd = r.get('bottleneck', '-')
+              print(f\"{label:<20} {r['num_params']:>8,} {ms:>10} {gf:>10} {eff:>7}% {bnd:>8}\")
+          "
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: roofline-reports
+          path: |
+            roofline_report.json
+            roofline_output.txt
+            roofline_compare.json
+            roofline_compare.txt
+          retention-days: 30
