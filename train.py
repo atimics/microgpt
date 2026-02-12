@@ -12,6 +12,13 @@ import random   # for random.seed, random.choices
 import json     # for json.dump
 import argparse # for argparse.ArgumentParser
 
+# Optional C accelerator for inner loops (falls back to pure Python)
+try:
+    import fastops as _C
+    HAS_C = True
+except ImportError:
+    HAS_C = False
+
 # CLI arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('--n-embd', type=int, default=16, help='Number of channels in the Transformer')
@@ -121,33 +128,41 @@ def linear(x, w):
     n_out, n_in = w.nout, w.nin
     xd = x.data
     wd = w.data
-    out_data = [0.0] * n_out
-    n_in4 = n_in - (n_in % 4)
-    for i in range(n_out):
-        s = 0.0
-        wi = wd[i]
-        for j in range(0, n_in4, 4):
-            s += wi[j] * xd[j] + wi[j+1] * xd[j+1] + wi[j+2] * xd[j+2] + wi[j+3] * xd[j+3]
-        for j in range(n_in4, n_in):
-            s += wi[j] * xd[j]
-        out_data[i] = s
-    out = Tensor(out_data, (x,))
-    def _backward():
-        xd = x.data
-        xg = x.grad
-        og = out.grad
+    if HAS_C:
+        out_data = _C.matvec(wd, xd)
+    else:
+        out_data = [0.0] * n_out
+        n_in4 = n_in - (n_in % 4)
         for i in range(n_out):
-            gi = og[i]
-            if gi == 0.0:
-                continue
+            s = 0.0
             wi = wd[i]
-            wgi = w.grad[i]
             for j in range(0, n_in4, 4):
-                wgi[j] += gi * xd[j]; wgi[j+1] += gi * xd[j+1]; wgi[j+2] += gi * xd[j+2]; wgi[j+3] += gi * xd[j+3]
-                xg[j] += gi * wi[j]; xg[j+1] += gi * wi[j+1]; xg[j+2] += gi * wi[j+2]; xg[j+3] += gi * wi[j+3]
+                s += wi[j] * xd[j] + wi[j+1] * xd[j+1] + wi[j+2] * xd[j+2] + wi[j+3] * xd[j+3]
             for j in range(n_in4, n_in):
-                wgi[j] += gi * xd[j]
-                xg[j] += gi * wi[j]
+                s += wi[j] * xd[j]
+            out_data[i] = s
+    out = Tensor(out_data, (x,))
+    if HAS_C:
+        def _backward():
+            _C.linear_backward(out.grad, wd, w.grad, x.data, x.grad)
+    else:
+        def _backward():
+            xd = x.data
+            xg = x.grad
+            og = out.grad
+            n_in4 = n_in - (n_in % 4)
+            for i in range(n_out):
+                gi = og[i]
+                if gi == 0.0:
+                    continue
+                wi = wd[i]
+                wgi = w.grad[i]
+                for j in range(0, n_in4, 4):
+                    wgi[j] += gi * xd[j]; wgi[j+1] += gi * xd[j+1]; wgi[j+2] += gi * xd[j+2]; wgi[j+3] += gi * xd[j+3]
+                    xg[j] += gi * wi[j]; xg[j+1] += gi * wi[j+1]; xg[j+2] += gi * wi[j+2]; xg[j+3] += gi * wi[j+3]
+                for j in range(n_in4, n_in):
+                    wgi[j] += gi * xd[j]
+                    xg[j] += gi * wi[j]
     out._backward = _backward
     return out
 
@@ -303,6 +318,7 @@ def gpt_inference(token_id, pos_id, keys, values):
         ms = sum(xi * xi for xi in x) / len(x)
         return [xi * (ms + 1e-5) ** -0.5 for xi in x]
     def _linear(x, w):
+        if HAS_C: return _C.matvec(w.data, x)
         return [sum(wi[j] * x[j] for j in range(len(x))) for wi in w.data]
     x = _rmsnorm(x)
     for li in range(n_layer):
