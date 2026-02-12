@@ -13,7 +13,10 @@ import json     # for json.dump
 import argparse # for argparse.ArgumentParser
 
 # Optional C accelerator for inner loops (falls back to pure Python)
+# Set MICROGPT_PURE_PYTHON=1 to force pure Python mode (useful for benchmarking)
 try:
+    if os.environ.get('MICROGPT_PURE_PYTHON'):
+        raise ImportError("pure Python mode forced via env var")
     import fastops as _C
     HAS_C = True
 except ImportError:
