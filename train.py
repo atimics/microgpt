@@ -9,6 +9,7 @@ import os       # for os.path.exists
 import time     # for time.perf_counter
 import math     # for math.log, math.exp
 import random   # for random.seed, random.choices
+import json     # for json.dump
 import argparse # for argparse.ArgumentParser
 
 # CLI arguments
@@ -231,18 +232,42 @@ for step in range(args.num_steps):
 print(f"mean loss last 50 steps: {sum(lossf_history[-50:]) / len(lossf_history[-50:]):.4f}") # ~usable for basic kwarg tuning
 print(f"training time: {time.perf_counter() - t_start:.2f}s") # ~usable for basic performance benchmarking
 
-# Inference: generate 5 samples
+# Inference: generate 20 samples
 temperature = 0.5 # number in (0, 1] that controls the "creativity" of generated text, low to high
+generated_samples = []
 print("\n--- inference ---")
 for sample_idx in range(20):
     keys, values = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
     token_id = BOS
-    print(f"sample {sample_idx+1}: ", end="")
+    sample_chars = []
     for pos_id in range(block_size):
         logits = gpt(token_id, pos_id, keys, values)
         probs = softmax([l / temperature for l in logits])
         token_id = random.choices(range(vocab_size), weights=[p.data for p in probs])[0]
         if token_id == BOS:
             break
-        print(itos[token_id], end="")
-    print()
+        sample_chars.append(itos[token_id])
+    sample_str = ''.join(sample_chars)
+    generated_samples.append(sample_str)
+    print(f"sample {sample_idx+1}: {sample_str}")
+
+# Save run metrics to JSON for the training harness
+training_time = time.perf_counter() - t_start
+mean_loss_last_50 = sum(lossf_history[-50:]) / len(lossf_history[-50:])
+run_metrics = {
+    'hyperparams': {
+        'n_embd': n_embd, 'n_layer': n_layer, 'n_head': n_head,
+        'block_size': block_size, 'num_steps': args.num_steps,
+        'learning_rate': args.learning_rate,
+    },
+    'num_params': len(params),
+    'vocab_size': vocab_size,
+    'num_docs': len(docs),
+    'loss_history': lossf_history,
+    'loss_final': lossf_history[-1],
+    'loss_mean_last_50': mean_loss_last_50,
+    'training_time_seconds': round(training_time, 4),
+    'generated_samples': generated_samples,
+}
+with open('_last_run.json', 'w') as f:
+    json.dump(run_metrics, f, indent=2)
