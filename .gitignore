@@ -1,4 +1,7 @@
 _last_run.json
+current.json
+report.md
+report.txt
 roofline_results.json
 roofline_report.json
 roofline_compare.json

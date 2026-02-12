@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: ['*']
 
+permissions:
+  contents: write
+  pull-requests: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -27,12 +31,15 @@ jobs:
       - name: Run smoke tests
         run: python test_smoke.py --quick
 
-  roofline-report:
+  benchmark:
     runs-on: ubuntu-latest
     needs: test
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Fetch full history so we can push baseline updates
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -42,26 +49,93 @@ jobs:
       - name: Build C extension
         run: python setup.py build_ext --inplace
 
-      - name: Run full smoke tests (with measurement)
+      - name: Run full smoke tests
         run: python test_smoke.py
 
-      - name: Generate roofline report (all configs)
+      - name: Run benchmark
+        run: python benchmark.py run --output current.json
+
+      # --- Compare against baseline (PRs and feature branches) ---
+      - name: Compare against baseline
+        id: compare
+        if: hashFiles('baseline.json') != ''
+        run: |
+          python benchmark.py compare baseline.json current.json --md --output report.md
+          python benchmark.py compare baseline.json current.json --output report.txt
+          echo "has_baseline=true" >> "$GITHUB_OUTPUT"
+
+      - name: Post comparison to step summary
+        if: steps.compare.outputs.has_baseline == 'true'
+        run: |
+          echo "## Benchmark Comparison" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          # Strip the HTML comment marker line
+          tail -n +2 report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && steps.compare.outputs.has_baseline == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+          COMMENT_TAG="<!-- microgpt-benchmark -->"
+          BODY=$(cat report.md)
+
+          # Find existing benchmark comment and update it, or create new
+          EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR_NUM}/comments" \
+            --jq ".[] | select(.body | startswith(\"${COMMENT_TAG}\")) | .id" \
+            | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${EXISTING}" \
+              -X PATCH -f body="$BODY"
+            echo "Updated existing comment $EXISTING"
+          else
+            gh pr comment "$PR_NUM" --body "$BODY"
+            echo "Created new comment"
+          fi
+
+      # --- Update baseline on main branch pushes ---
+      - name: Update baseline
+        if: github.ref == 'refs/heads/claude/minimal-gpt-implementation-cpLV7' && github.event_name == 'push'
+        run: |
+          # Skip if this push was a baseline update (avoid infinite loop)
+          LAST_MSG=$(git log -1 --pretty=%s)
+          if echo "$LAST_MSG" | grep -q "Update baseline.json"; then
+            echo "Skipping: last commit was a baseline update"
+            exit 0
+          fi
+
+          cp current.json baseline.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add baseline.json
+          if git diff --cached --quiet; then
+            echo "No changes to baseline"
+          else
+            git commit -m "Update baseline.json [skip ci]"
+            git push
+            echo "Baseline updated"
+          fi
+
+      # --- Generate detailed reports ---
+      - name: Generate roofline report
         run: |
           python roofline.py --all-configs --json roofline_report.json 2>&1 | tee roofline_output.txt
 
-      - name: Generate comparison report (Python vs C)
+      - name: Generate Python vs C comparison
         run: |
           python roofline.py --all-configs --compare-c --json roofline_compare.json 2>&1 | tee roofline_compare.txt
 
-      - name: Post summary to job
+      - name: Post roofline summary
         if: always()
         run: |
-          echo "## Roofline Analysis Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          # Extract summary table and key insights
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Roofline Analysis" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
           python -c "
-          import json, sys
+          import json
           with open('roofline_report.json') as f:
               data = json.load(f)
           cpu = data['cpu']
@@ -79,8 +153,8 @@ jobs:
               eff = f\"{r['efficiency_pct']:.3f}\" if 'efficiency_pct' in r else '-'
               bnd = r.get('bottleneck', '-')
               print(f\"{label:<20} {r['num_params']:>8,} {ms:>10} {gf:>10} {eff:>7}% {bnd:>8}\")
-          "
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          " >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload reports
         uses: actions/upload-artifact@v4
@@ -88,6 +162,10 @@ jobs:
         with:
           name: roofline-reports
           path: |
+            baseline.json
+            current.json
+            report.md
+            report.txt
             roofline_report.json
             roofline_output.txt
             roofline_compare.json
