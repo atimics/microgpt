@@ -31,6 +31,7 @@ if not os.path.exists('input.txt'):
     urllib.request.urlretrieve('https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt', 'input.txt')
 docs = [l.strip() for l in open('input.txt').read().strip().split('\n') if l.strip()] # list[str] of documents
 random.shuffle(docs)
+docs_tokenized = None # pre-tokenized after stoi is built
 
 # Tokenizer: simple character-level tokenization with a BOS token delimiter
 chars = ['<BOS>'] + sorted(set(''.join(docs)))
@@ -38,6 +39,7 @@ vocab_size = len(chars)
 stoi = { ch:i for i, ch in enumerate(chars) } # string to integer
 itos = { i:ch for i, ch in enumerate(chars) } # integer to string
 BOS = stoi['<BOS>']
+docs_tokenized = [[BOS] + [stoi[ch] for ch in doc] + [BOS] for doc in docs]
 print(f"vocab size: {vocab_size}, num docs: {len(docs)}")
 
 # Autograd engine: vector-level (each node is a 1D vector, not a scalar)
@@ -49,7 +51,7 @@ class Tensor:
         self.data = data
         self.grad = [0.0] * len(data)
         self._backward = lambda: None
-        self._prev = set(_children)
+        self._prev = _children
 
     def backward(self):
         # iterative topological sort (avoids recursion stack overflow on deep graphs)
@@ -57,16 +59,18 @@ class Tensor:
         visited = set()
         stack = [(self, False)]
         while stack:
-            node, processed = stack.pop()
+            node, processed = stack[-1]
             if processed:
+                stack.pop()
                 topo.append(node)
                 continue
-            if node in visited:
+            if id(node) in visited:
+                stack.pop()
                 continue
-            visited.add(node)
-            stack.append((node, True))
+            visited.add(id(node))
+            stack[-1] = (node, True)
             for child in node._prev:
-                if child not in visited:
+                if id(child) not in visited:
                     stack.append((child, False))
         self.grad[0] = 1.0
         for v in reversed(topo):
@@ -74,18 +78,19 @@ class Tensor:
 
 class Param:
     """ a 2D weight matrix with gradient and Adam optimizer state """
-    __slots__ = ('data', 'grad', 'm', 'v')
+    __slots__ = ('data', 'grad', 'm', 'v', 'nout', 'nin')
 
     def __init__(self, nout, nin, std=0.02):
+        self.nout, self.nin = nout, nin
         self.data = [[random.gauss(0, std) for _ in range(nin)] for _ in range(nout)]
         self.grad = [[0.0] * nin for _ in range(nout)]
         self.m = [[0.0] * nin for _ in range(nout)] # Adam first moment
         self.v = [[0.0] * nin for _ in range(nout)] # Adam second moment
 
     def zero_grad(self):
-        for row in self.grad:
-            for j in range(len(row)):
-                row[j] = 0.0
+        nin = self.nin
+        for i in range(self.nout):
+            self.grad[i] = [0.0] * nin
 
 # Model parameter initialization
 state_dict = {'wte': Param(vocab_size, n_embd), 'wpe': Param(block_size, n_embd), 'lm_head': Param(vocab_size, n_embd)}
@@ -113,26 +118,34 @@ def embedding(param, idx):
     return out
 
 def linear(x, w):
-    n_out, n_in = len(w.data), len(w.data[0])
+    n_out, n_in = w.nout, w.nin
     xd = x.data
+    wd = w.data
     out_data = [0.0] * n_out
+    n_in4 = n_in - (n_in % 4)
     for i in range(n_out):
         s = 0.0
-        wi = w.data[i]
-        for j in range(n_in):
+        wi = wd[i]
+        for j in range(0, n_in4, 4):
+            s += wi[j] * xd[j] + wi[j+1] * xd[j+1] + wi[j+2] * xd[j+2] + wi[j+3] * xd[j+3]
+        for j in range(n_in4, n_in):
             s += wi[j] * xd[j]
         out_data[i] = s
     out = Tensor(out_data, (x,))
     def _backward():
         xd = x.data
         xg = x.grad
+        og = out.grad
         for i in range(n_out):
-            gi = out.grad[i]
+            gi = og[i]
             if gi == 0.0:
                 continue
-            wi = w.data[i]
+            wi = wd[i]
             wgi = w.grad[i]
-            for j in range(n_in):
+            for j in range(0, n_in4, 4):
+                wgi[j] += gi * xd[j]; wgi[j+1] += gi * xd[j+1]; wgi[j+2] += gi * xd[j+2]; wgi[j+3] += gi * xd[j+3]
+                xg[j] += gi * wi[j]; xg[j+1] += gi * wi[j+1]; xg[j+2] += gi * wi[j+2]; xg[j+3] += gi * wi[j+3]
+            for j in range(n_in4, n_in):
                 wgi[j] += gi * xd[j]
                 xg[j] += gi * wi[j]
     out._backward = _backward
@@ -199,28 +212,37 @@ def attention(q, keys, values, n_head, head_dim):
             out_data[idx] = s
     children = (q,) + tuple(keys) + tuple(values)
     out = Tensor(out_data, children)
+    v_data = [v.data for v in values]
+    v_grad = [v.grad for v in values]
+    k_data = [k.data for k in keys]
+    k_grad = [k.grad for k in keys]
+    qd = q.data
+    qg = q.grad
     def _backward():
+        og = out.grad
         for h in range(n_head):
             hs = h * head_dim
             attn_w = all_attn_weights[h]
             d_attn = [0.0] * T
             for j in range(head_dim):
-                g = out.grad[hs + j]
+                g = og[hs + j]
                 if g == 0.0:
                     continue
                 idx = hs + j
                 for t in range(T):
-                    values[t].grad[idx] += g * attn_w[t]
-                    d_attn[t] += g * values[t].data[idx]
+                    v_grad[t][idx] += g * attn_w[t]
+                    d_attn[t] += g * v_data[t][idx]
             dot = sum(attn_w[t] * d_attn[t] for t in range(T))
             for t in range(T):
                 dl = attn_w[t] * (d_attn[t] - dot) / scale
                 if dl == 0.0:
                     continue
+                kd_t = k_data[t]
+                kg_t = k_grad[t]
                 for j in range(head_dim):
                     idx = hs + j
-                    q.grad[idx] += dl * keys[t].data[idx]
-                    keys[t].grad[idx] += dl * q.data[idx]
+                    qg[idx] += dl * kd_t[idx]
+                    kg_t[idx] += dl * qd[idx]
     out._backward = _backward
     return out
 
@@ -321,9 +343,8 @@ lossf_history = []
 t_start = time.perf_counter()
 for step in range(args.num_steps):
 
-    # Take a single training document, tokenize it, surround it with BOS special token on both sides
-    doc = docs[step % len(docs)]
-    tokens = [BOS] + [stoi[ch] for ch in doc] + [BOS]
+    # Take a single training document (pre-tokenized, surrounded with BOS on both sides)
+    tokens = docs_tokenized[step % len(docs)]
     n = min(block_size, len(tokens) - 1)
 
     # Zero gradients on all parameters
@@ -342,16 +363,19 @@ for step in range(args.num_steps):
 
     # Adam update (optimizer)
     lr_t = learning_rate * (1 - step / args.num_steps)
+    bc1 = 1.0 - beta1 ** (step + 1)
+    bc2 = 1.0 - beta2 ** (step + 1)
+    one_m_b1 = 1.0 - beta1
+    one_m_b2 = 1.0 - beta2
     for p in params:
-        for i in range(len(p.data)):
-            pd, pg, pm, pv = p.data[i], p.grad[i], p.m[i], p.v[i]
-            for j in range(len(pd)):
+        p_data, p_grad, p_m, p_v = p.data, p.grad, p.m, p.v
+        for i in range(p.nout):
+            pd, pg, pm, pv = p_data[i], p_grad[i], p_m[i], p_v[i]
+            for j in range(p.nin):
                 g = pg[j]
-                pm[j] = beta1 * pm[j] + (1 - beta1) * g
-                pv[j] = beta2 * pv[j] + (1 - beta2) * g * g
-                m_hat = pm[j] / (1 - beta1 ** (step + 1))
-                v_hat = pv[j] / (1 - beta2 ** (step + 1))
-                pd[j] -= lr_t * m_hat / (v_hat ** 0.5 + eps_adam)
+                pm[j] = beta1 * pm[j] + one_m_b1 * g
+                pv[j] = beta2 * pv[j] + one_m_b2 * g * g
+                pd[j] -= lr_t * (pm[j] / bc1) / ((pv[j] / bc2) ** 0.5 + eps_adam)
 
     lossf_history.append(loss.data[0])
     print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}")
