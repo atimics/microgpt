@@ -59,9 +59,13 @@ class Tensor:
 
     def __init__(self, data, _children=()):
         self.data = data
-        self.grad = [0.0] * len(data)
+        self.grad = None  # lazily allocated on first backward
         self._backward = lambda: None
         self._prev = _children
+
+    def _ensure_grad(self):
+        if self.grad is None:
+            self.grad = [0.0] * len(self.data)
 
     def backward(self):
         # iterative topological sort (avoids recursion stack overflow on deep graphs)
@@ -82,6 +86,9 @@ class Tensor:
             for child in node._prev:
                 if id(child) not in visited:
                     stack.append((child, False))
+        # Allocate grads for all nodes in one pass
+        for v in topo:
+            v._ensure_grad()
         self.grad[0] = 1.0
         for v in reversed(topo):
             v._backward()
@@ -98,9 +105,12 @@ class Param:
         self.v = [[0.0] * nin for _ in range(nout)] # Adam second moment
 
     def zero_grad(self):
-        nin = self.nin
-        for i in range(self.nout):
-            self.grad[i] = [0.0] * nin
+        if HAS_C:
+            _C.zero_grad(self.grad)
+        else:
+            nin = self.nin
+            for i in range(self.nout):
+                self.grad[i] = [0.0] * nin
 
 # Model parameter initialization
 state_dict = {'wte': Param(vocab_size, n_embd), 'wpe': Param(block_size, n_embd), 'lm_head': Param(vocab_size, n_embd)}
@@ -170,111 +180,153 @@ def linear(x, w):
     return out
 
 def rmsnorm(x):
-    n = len(x.data)
     xd = x.data
-    ms = sum(xi * xi for xi in xd) / n
-    scale = (ms + 1e-5) ** -0.5
-    out = Tensor([xi * scale for xi in xd], (x,))
-    def _backward():
-        dot = sum(out.grad[i] * xd[i] for i in range(n))
-        s3n = scale * scale * scale / n
-        for j in range(n):
-            x.grad[j] += out.grad[j] * scale - s3n * xd[j] * dot
+    if HAS_C:
+        out_data, scale = _C.rmsnorm_forward(xd)
+    else:
+        n = len(xd)
+        ms = sum(xi * xi for xi in xd) / n
+        scale = (ms + 1e-5) ** -0.5
+        out_data = [xi * scale for xi in xd]
+    out = Tensor(out_data, (x,))
+    if HAS_C:
+        def _backward():
+            _C.rmsnorm_backward(out.grad, xd, scale, x.grad)
+    else:
+        n = len(xd)
+        def _backward():
+            dot = sum(out.grad[i] * xd[i] for i in range(n))
+            s3n = scale * scale * scale / n
+            for j in range(n):
+                x.grad[j] += out.grad[j] * scale - s3n * xd[j] * dot
     out._backward = _backward
     return out
 
 def tensor_add(a, b):
-    out = Tensor([ai + bi for ai, bi in zip(a.data, b.data)], (a, b))
-    def _backward():
-        for i in range(len(a.data)):
-            a.grad[i] += out.grad[i]
-            b.grad[i] += out.grad[i]
+    if HAS_C:
+        out_data = _C.tensor_add(a.data, b.data)
+    else:
+        out_data = [ai + bi for ai, bi in zip(a.data, b.data)]
+    out = Tensor(out_data, (a, b))
+    if HAS_C:
+        def _backward():
+            _C.tensor_add_backward(out.grad, a.grad, b.grad)
+    else:
+        def _backward():
+            for i in range(len(a.data)):
+                a.grad[i] += out.grad[i]
+                b.grad[i] += out.grad[i]
     out._backward = _backward
     return out
 
 def squared_relu(x):
     xd = x.data
-    out = Tensor([max(0.0, xi) ** 2 for xi in xd], (x,))
-    def _backward():
-        for i in range(len(xd)):
-            if xd[i] > 0.0:
-                x.grad[i] += 2.0 * xd[i] * out.grad[i]
+    if HAS_C:
+        out_data = _C.squared_relu_forward(xd)
+    else:
+        out_data = [max(0.0, xi) ** 2 for xi in xd]
+    out = Tensor(out_data, (x,))
+    if HAS_C:
+        def _backward():
+            _C.squared_relu_backward(xd, out.grad, x.grad)
+    else:
+        def _backward():
+            for i in range(len(xd)):
+                if xd[i] > 0.0:
+                    x.grad[i] += 2.0 * xd[i] * out.grad[i]
     out._backward = _backward
     return out
 
 def attention(q, keys, values, n_head, head_dim):
     T = len(keys)
-    scale = head_dim ** 0.5
-    out_data = [0.0] * (n_head * head_dim)
-    all_attn_weights = []
-    for h in range(n_head):
-        hs = h * head_dim
-        qd = q.data
-        attn_logits = [0.0] * T
-        for t in range(T):
-            s = 0.0
-            kd = keys[t].data
-            for j in range(head_dim):
-                s += qd[hs + j] * kd[hs + j]
-            attn_logits[t] = s / scale
-        max_val = max(attn_logits) if T > 0 else 0.0
-        exps = [math.exp(a - max_val) for a in attn_logits]
-        total = sum(exps)
-        attn_w = [e / total for e in exps]
-        all_attn_weights.append(attn_w)
-        for j in range(head_dim):
-            s = 0.0
-            idx = hs + j
-            for t in range(T):
-                s += attn_w[t] * values[t].data[idx]
-            out_data[idx] = s
     children = (q,) + tuple(keys) + tuple(values)
-    out = Tensor(out_data, children)
-    v_data = [v.data for v in values]
-    v_grad = [v.grad for v in values]
     k_data = [k.data for k in keys]
+    v_data = [v.data for v in values]
+    if HAS_C:
+        out_data, all_attn_weights = _C.attention_forward(q.data, k_data, v_data, n_head, head_dim)
+    else:
+        scale = head_dim ** 0.5
+        out_data = [0.0] * (n_head * head_dim)
+        all_attn_weights = []
+        for h in range(n_head):
+            hs = h * head_dim
+            qd = q.data
+            attn_logits = [0.0] * T
+            for t in range(T):
+                s = 0.0
+                kd = keys[t].data
+                for j in range(head_dim):
+                    s += qd[hs + j] * kd[hs + j]
+                attn_logits[t] = s / scale
+            max_val = max(attn_logits) if T > 0 else 0.0
+            exps = [math.exp(a - max_val) for a in attn_logits]
+            total = sum(exps)
+            attn_w = [e / total for e in exps]
+            all_attn_weights.append(attn_w)
+            for j in range(head_dim):
+                s = 0.0
+                idx = hs + j
+                for t in range(T):
+                    s += attn_w[t] * values[t].data[idx]
+                out_data[idx] = s
+    out = Tensor(out_data, children)
+    v_grad = [v.grad for v in values]
     k_grad = [k.grad for k in keys]
     qd = q.data
     qg = q.grad
-    def _backward():
-        og = out.grad
-        for h in range(n_head):
-            hs = h * head_dim
-            attn_w = all_attn_weights[h]
-            d_attn = [0.0] * T
-            for j in range(head_dim):
-                g = og[hs + j]
-                if g == 0.0:
-                    continue
-                idx = hs + j
-                for t in range(T):
-                    v_grad[t][idx] += g * attn_w[t]
-                    d_attn[t] += g * v_data[t][idx]
-            dot = sum(attn_w[t] * d_attn[t] for t in range(T))
-            for t in range(T):
-                dl = attn_w[t] * (d_attn[t] - dot) / scale
-                if dl == 0.0:
-                    continue
-                kd_t = k_data[t]
-                kg_t = k_grad[t]
+    if HAS_C:
+        def _backward():
+            _C.attention_backward(out.grad, qd, k_data, v_data,
+                                  all_attn_weights, qg, k_grad, v_grad,
+                                  n_head, head_dim)
+    else:
+        scale = head_dim ** 0.5
+        def _backward():
+            og = out.grad
+            for h in range(n_head):
+                hs = h * head_dim
+                attn_w = all_attn_weights[h]
+                d_attn = [0.0] * T
                 for j in range(head_dim):
+                    g = og[hs + j]
+                    if g == 0.0:
+                        continue
                     idx = hs + j
-                    qg[idx] += dl * kd_t[idx]
-                    kg_t[idx] += dl * qd[idx]
+                    for t in range(T):
+                        v_grad[t][idx] += g * attn_w[t]
+                        d_attn[t] += g * v_data[t][idx]
+                dot = sum(attn_w[t] * d_attn[t] for t in range(T))
+                for t in range(T):
+                    dl = attn_w[t] * (d_attn[t] - dot) / scale
+                    if dl == 0.0:
+                        continue
+                    kd_t = k_data[t]
+                    kg_t = k_grad[t]
+                    for j in range(head_dim):
+                        idx = hs + j
+                        qg[idx] += dl * kd_t[idx]
+                        kg_t[idx] += dl * qd[idx]
     out._backward = _backward
     return out
 
 def cross_entropy(logits, target):
-    max_val = max(logits.data)
-    exps = [math.exp(v - max_val) for v in logits.data]
-    total = sum(exps)
-    probs = [e / total for e in exps]
-    loss = -math.log(probs[target])
+    if HAS_C:
+        loss, probs = _C.cross_entropy_forward(logits.data, target)
+    else:
+        max_val = max(logits.data)
+        exps = [math.exp(v - max_val) for v in logits.data]
+        total = sum(exps)
+        probs = [e / total for e in exps]
+        loss = -math.log(probs[target])
     out = Tensor([loss], (logits,))
-    def _backward():
-        g = out.grad[0]
-        for i in range(len(logits.data)):
-            logits.grad[i] += g * (probs[i] - (1.0 if i == target else 0.0))
+    if HAS_C:
+        def _backward():
+            _C.cross_entropy_backward(out.grad[0], probs, target, logits.grad)
+    else:
+        def _backward():
+            g = out.grad[0]
+            for i in range(len(logits.data)):
+                logits.grad[i] += g * (probs[i] - (1.0 if i == target else 0.0))
     out._backward = _backward
     return out
 
@@ -316,13 +368,20 @@ def gpt(token_id, pos_id, keys, values):
 # Model architecture (inference: plain floats, no autograd overhead)
 def gpt_inference(token_id, pos_id, keys, values):
     sd = state_dict
-    x = [t + p for t, p in zip(sd['wte'].data[token_id], sd['wpe'].data[pos_id])]
-    def _rmsnorm(x):
-        ms = sum(xi * xi for xi in x) / len(x)
-        return [xi * (ms + 1e-5) ** -0.5 for xi in x]
-    def _linear(x, w):
-        if HAS_C: return _C.matvec(w.data, x)
-        return [sum(wi[j] * x[j] for j in range(len(x))) for wi in w.data]
+    if HAS_C:
+        x = _C.tensor_add(sd['wte'].data[token_id], sd['wpe'].data[pos_id])
+        def _rmsnorm(x):
+            out, _ = _C.rmsnorm_forward(x)
+            return out
+        _linear = lambda x, w: _C.matvec(w.data, x)
+        _sqrelu = lambda x: _C.squared_relu_forward(x)
+    else:
+        x = [t + p for t, p in zip(sd['wte'].data[token_id], sd['wpe'].data[pos_id])]
+        def _rmsnorm(x):
+            ms = sum(xi * xi for xi in x) / len(x)
+            return [xi * (ms + 1e-5) ** -0.5 for xi in x]
+        _linear = lambda x, w: [sum(wi[j] * x[j] for j in range(len(x))) for wi in w.data]
+        _sqrelu = lambda x: [max(0.0, xi)**2 for xi in x]
     x = _rmsnorm(x)
     for li in range(n_layer):
         xr = list(x)
@@ -332,25 +391,28 @@ def gpt_inference(token_id, pos_id, keys, values):
         v = _linear(x, sd[f'layer{li}.attn_wv'])
         keys[li].append(k)
         values[li].append(v)
-        x_attn = []
-        for h in range(n_head):
-            hs = h * head_dim
-            attn_logits = [sum(q[hs+j] * keys[li][t][hs+j] for j in range(head_dim)) / head_dim**0.5
-                           for t in range(len(keys[li]))]
-            mx = max(attn_logits)
-            exps = [math.exp(a - mx) for a in attn_logits]
-            total = sum(exps)
-            aw = [e / total for e in exps]
-            for j in range(head_dim):
-                x_attn.append(sum(aw[t] * values[li][t][hs+j] for t in range(len(values[li]))))
+        if HAS_C:
+            x_attn, _ = _C.attention_forward(q, keys[li], values[li], n_head, head_dim)
+        else:
+            x_attn = []
+            for h in range(n_head):
+                hs = h * head_dim
+                attn_logits = [sum(q[hs+j] * keys[li][t][hs+j] for j in range(head_dim)) / head_dim**0.5
+                               for t in range(len(keys[li]))]
+                mx = max(attn_logits)
+                exps = [math.exp(a - mx) for a in attn_logits]
+                total = sum(exps)
+                aw = [e / total for e in exps]
+                for j in range(head_dim):
+                    x_attn.append(sum(aw[t] * values[li][t][hs+j] for t in range(len(values[li]))))
         x = _linear(x_attn, sd[f'layer{li}.attn_wo'])
-        x = [a + b for a, b in zip(x, xr)]
+        x = _C.tensor_add(x, xr) if HAS_C else [a + b for a, b in zip(x, xr)]
         xr = list(x)
         x = _rmsnorm(x)
         x = _linear(x, sd[f'layer{li}.mlp_fc1'])
-        x = [max(0.0, xi)**2 for xi in x]
+        x = _sqrelu(x)
         x = _linear(x, sd[f'layer{li}.mlp_fc2'])
-        x = [a + b for a, b in zip(x, xr)]
+        x = _C.tensor_add(x, xr) if HAS_C else [a + b for a, b in zip(x, xr)]
     return _linear(x, sd['lm_head'])
 
 # Adam optimizer
@@ -384,17 +446,22 @@ for step in range(args.num_steps):
     lr_t = learning_rate * (1 - step / args.num_steps)
     bc1 = 1.0 - beta1 ** (step + 1)
     bc2 = 1.0 - beta2 ** (step + 1)
-    one_m_b1 = 1.0 - beta1
-    one_m_b2 = 1.0 - beta2
-    for p in params:
-        p_data, p_grad, p_m, p_v = p.data, p.grad, p.m, p.v
-        for i in range(p.nout):
-            pd, pg, pm, pv = p_data[i], p_grad[i], p_m[i], p_v[i]
-            for j in range(p.nin):
-                g = pg[j]
-                pm[j] = beta1 * pm[j] + one_m_b1 * g
-                pv[j] = beta2 * pv[j] + one_m_b2 * g * g
-                pd[j] -= lr_t * (pm[j] / bc1) / ((pv[j] / bc2) ** 0.5 + eps_adam)
+    if HAS_C:
+        for p in params:
+            _C.adam_update(p.data, p.grad, p.m, p.v,
+                           lr_t, beta1, beta2, bc1, bc2, eps_adam)
+    else:
+        one_m_b1 = 1.0 - beta1
+        one_m_b2 = 1.0 - beta2
+        for p in params:
+            p_data, p_grad, p_m, p_v = p.data, p.grad, p.m, p.v
+            for i in range(p.nout):
+                pd, pg, pm, pv = p_data[i], p_grad[i], p_m[i], p_v[i]
+                for j in range(p.nin):
+                    g = pg[j]
+                    pm[j] = beta1 * pm[j] + one_m_b1 * g
+                    pv[j] = beta2 * pv[j] + one_m_b2 * g * g
+                    pd[j] -= lr_t * (pm[j] / bc1) / ((pv[j] / bc2) ** 0.5 + eps_adam)
 
     lossf_history.append(loss.data[0])
     print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}")
