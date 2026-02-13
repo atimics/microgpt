@@ -270,12 +270,12 @@ def attention(q, keys, values, n_head, head_dim):
                     s += attn_w[t] * values[t].data[idx]
                 out_data[idx] = s
     out = Tensor(out_data, children)
-    v_grad = [v.grad for v in values]
-    k_grad = [k.grad for k in keys]
     qd = q.data
-    qg = q.grad
     if HAS_C:
         def _backward():
+            qg = q.grad
+            k_grad = [k.grad for k in keys]
+            v_grad = [v.grad for v in values]
             _C.attention_backward(out.grad, qd, k_data, v_data,
                                   all_attn_weights, qg, k_grad, v_grad,
                                   n_head, head_dim)
@@ -283,6 +283,9 @@ def attention(q, keys, values, n_head, head_dim):
         scale = head_dim ** 0.5
         def _backward():
             og = out.grad
+            qg = q.grad
+            k_grad = [k.grad for k in keys]
+            v_grad = [v.grad for v in values]
             for h in range(n_head):
                 hs = h * head_dim
                 attn_w = all_attn_weights[h]
