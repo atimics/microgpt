@@ -4,338 +4,387 @@
 #include <string.h>
 
 /*
- * C accelerator for microgpt's inner loops.
- * Covers the major hot paths: linear, attention, rmsnorm, activation,
- * cross-entropy, tensor_add, and Adam optimizer.
+ * C accelerator for microgpt.
+ * Supports both array.array('d') [zero-copy via buffer protocol]
+ * and list[float] [copies to/from C buffers] inputs.
+ * Forward functions return array.array('d') when available.
  */
 
-/* ---- helpers ---- */
-static inline double* list_to_buf(PyObject *list, Py_ssize_t n) {
-    double *buf = (double *)malloc(n * sizeof(double));
-    if (!buf) return NULL;
+static PyObject *array_cls = NULL; /* cached array.array type */
+
+/* ==== DArr: unified zero-copy/copy access to array.array or list ==== */
+
+typedef struct {
+    double *ptr;
+    Py_ssize_t n;
+    Py_buffer view;
+    int buffered; /* 1 = buffer protocol (zero-copy), 0 = malloc'd from list */
+} DArr;
+
+static int darr_get(DArr *d, PyObject *obj, int writable) {
+    /* Try buffer protocol first (zero-copy for array.array) */
+    if (PyObject_CheckBuffer(obj)) {
+        int flags = PyBUF_C_CONTIGUOUS | (writable ? PyBUF_WRITABLE : 0);
+        if (PyObject_GetBuffer(obj, &d->view, flags) == 0) {
+            d->ptr = (double *)d->view.buf;
+            d->n = (Py_ssize_t)(d->view.len / sizeof(double));
+            d->buffered = 1;
+            return 0;
+        }
+        PyErr_Clear();
+    }
+    /* Fallback: Python list of floats */
+    if (PyList_Check(obj)) {
+        d->n = PyList_GET_SIZE(obj);
+        d->ptr = (double *)malloc(d->n * sizeof(double));
+        if (!d->ptr) { PyErr_NoMemory(); return -1; }
+        for (Py_ssize_t i = 0; i < d->n; i++)
+            d->ptr[i] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(obj, i));
+        d->buffered = 0;
+        return 0;
+    }
+    PyErr_SetString(PyExc_TypeError, "expected array.array or list");
+    return -1;
+}
+
+/* Write modified malloc'd buffer back to list; no-op for buffer protocol */
+static void darr_sync(DArr *d, PyObject *obj) {
+    if (!d->buffered && PyList_Check(obj)) {
+        for (Py_ssize_t i = 0; i < d->n; i++) {
+            PyObject *nv = PyFloat_FromDouble(d->ptr[i]);
+            Py_XDECREF(PyList_GET_ITEM(obj, i));
+            PyList_SET_ITEM(obj, i, nv);
+        }
+    }
+}
+
+static void darr_done(DArr *d) {
+    if (d->buffered)
+        PyBuffer_Release(&d->view);
+    else
+        free(d->ptr);
+}
+
+/* Create new array.array('d') from C double buffer */
+static PyObject *darr_new(const double *data, Py_ssize_t n) {
+    if (array_cls)
+        return PyObject_CallFunction(array_cls, "sy#", "d",
+                                     (const char *)data, (Py_ssize_t)(n * sizeof(double)));
+    /* fallback: return list */
+    PyObject *out = PyList_New(n);
+    if (!out) return NULL;
     for (Py_ssize_t i = 0; i < n; i++)
-        buf[i] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(list, i));
-    return buf;
-}
-
-static inline void buf_to_list(const double *buf, PyObject *list, Py_ssize_t n) {
-    for (Py_ssize_t i = 0; i < n; i++) {
-        PyObject *old = PyList_GET_ITEM(list, i);
-        PyObject *nv = PyFloat_FromDouble(buf[i]);
-        Py_DECREF(old);
-        Py_INCREF(nv);
-        PyList_SET_ITEM(list, i, nv);
-    }
-}
-
-static inline void buf_to_new_list(const double *buf, PyObject *list, Py_ssize_t n) {
-    for (Py_ssize_t i = 0; i < n; i++)
-        PyList_SET_ITEM(list, i, PyFloat_FromDouble(buf[i]));
-}
-
-/* ---- dot product ---- */
-static PyObject* fastops_vec_dot(PyObject* self, PyObject* args) {
-    PyObject *a, *b;
-    if (!PyArg_ParseTuple(args, "OO", &a, &b))
-        return NULL;
-
-    Py_ssize_t n = PyList_GET_SIZE(a);
-    double s = 0.0;
-    for (Py_ssize_t i = 0; i < n; i++) {
-        double ai = PyFloat_AS_DOUBLE(PyList_GET_ITEM(a, i));
-        double bi = PyFloat_AS_DOUBLE(PyList_GET_ITEM(b, i));
-        s += ai * bi;
-    }
-    return PyFloat_FromDouble(s);
-}
-
-/* ---- scaled add: y[i] += alpha * x[i] ---- */
-static PyObject* fastops_vec_axpy(PyObject* self, PyObject* args) {
-    double alpha;
-    PyObject *x, *y;
-    if (!PyArg_ParseTuple(args, "dOO", &alpha, &x, &y))
-        return NULL;
-
-    Py_ssize_t n = PyList_GET_SIZE(x);
-    for (Py_ssize_t i = 0; i < n; i++) {
-        double xi = PyFloat_AS_DOUBLE(PyList_GET_ITEM(x, i));
-        double yi = PyFloat_AS_DOUBLE(PyList_GET_ITEM(y, i));
-        PyObject *new_val = PyFloat_FromDouble(yi + alpha * xi);
-        PyList_SET_ITEM(y, i, new_val);
-    }
-    Py_RETURN_NONE;
-}
-
-/* ---- matrix-vector: out[i] = dot(W[i], x) ---- */
-static PyObject* fastops_matvec(PyObject* self, PyObject* args) {
-    PyObject *W, *x;
-    if (!PyArg_ParseTuple(args, "OO", &W, &x))
-        return NULL;
-
-    Py_ssize_t nrow = PyList_GET_SIZE(W);
-    Py_ssize_t ncol = PyList_GET_SIZE(x);
-
-    double *xbuf = list_to_buf(x, ncol);
-    if (!xbuf) return PyErr_NoMemory();
-
-    PyObject *out = PyList_New(nrow);
-    if (!out) { free(xbuf); return NULL; }
-
-    for (Py_ssize_t i = 0; i < nrow; i++) {
-        PyObject *wi = PyList_GET_ITEM(W, i);
-        double s = 0.0;
-        for (Py_ssize_t j = 0; j < ncol; j++)
-            s += PyFloat_AS_DOUBLE(PyList_GET_ITEM(wi, j)) * xbuf[j];
-        PyList_SET_ITEM(out, i, PyFloat_FromDouble(s));
-    }
-
-    free(xbuf);
+        PyList_SET_ITEM(out, i, PyFloat_FromDouble(data[i]));
     return out;
 }
 
-/* ---- fused linear backward ---- */
-static PyObject* fastops_linear_backward(PyObject* self, PyObject* args) {
-    PyObject *og, *wd, *wgrad, *xd, *xgrad;
-    if (!PyArg_ParseTuple(args, "OOOOO", &og, &wd, &wgrad, &xd, &xgrad))
-        return NULL;
-
-    Py_ssize_t n_out = PyList_GET_SIZE(og);
-    Py_ssize_t n_in = PyList_GET_SIZE(xd);
-
-    double *xbuf = list_to_buf(xd, n_in);
-    if (!xbuf) return PyErr_NoMemory();
-
-    double *xgbuf = list_to_buf(xgrad, n_in);
-    if (!xgbuf) { free(xbuf); return PyErr_NoMemory(); }
-
-    /* Temporary buffers for one row of W and wgrad to avoid per-element PyObject ops */
-    double *wrow = (double *)malloc(n_in * sizeof(double));
-    double *wgrow = (double *)malloc(n_in * sizeof(double));
-    if (!wrow || !wgrow) { free(xbuf); free(xgbuf); free(wrow); free(wgrow); return PyErr_NoMemory(); }
-
-    for (Py_ssize_t i = 0; i < n_out; i++) {
-        double gi = PyFloat_AS_DOUBLE(PyList_GET_ITEM(og, i));
-        if (gi == 0.0) continue;
-
-        PyObject *wi = PyList_GET_ITEM(wd, i);
-        PyObject *wgi = PyList_GET_ITEM(wgrad, i);
-
-        /* Extract row to C buffer */
-        for (Py_ssize_t j = 0; j < n_in; j++) {
-            wrow[j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(wi, j));
-            wgrow[j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(wgi, j));
+/* Extract T rows from a Python list into a contiguous flat buffer */
+static double *rows_to_flat(PyObject *rows_list, Py_ssize_t T, Py_ssize_t dim) {
+    double *buf = (double *)malloc(T * dim * sizeof(double));
+    if (!buf) { PyErr_NoMemory(); return NULL; }
+    for (Py_ssize_t t = 0; t < T; t++) {
+        DArr row;
+        if (darr_get(&row, PyList_GET_ITEM(rows_list, t), 0) < 0) {
+            free(buf);
+            return NULL;
         }
-
-        /* Pure C inner loop - no Python API calls */
-        for (Py_ssize_t j = 0; j < n_in; j++) {
-            wgrow[j] += gi * xbuf[j];
-            xgbuf[j] += gi * wrow[j];
-        }
-
-        /* Write wgrad row back in bulk */
-        buf_to_list(wgrow, wgi, n_in);
+        memcpy(buf + t * dim, row.ptr, dim * sizeof(double));
+        darr_done(&row);
     }
+    return buf;
+}
 
-    /* write xgrad back */
-    buf_to_list(xgbuf, xgrad, n_in);
+/* Write contiguous flat buffer back to T rows */
+static int flat_to_rows(const double *buf, PyObject *rows_list, Py_ssize_t T, Py_ssize_t dim) {
+    for (Py_ssize_t t = 0; t < T; t++) {
+        PyObject *row_obj = PyList_GET_ITEM(rows_list, t);
+        DArr row;
+        if (darr_get(&row, row_obj, 1) < 0) return -1;
+        memcpy(row.ptr, buf + t * dim, dim * sizeof(double));
+        darr_sync(&row, row_obj);
+        darr_done(&row);
+    }
+    return 0;
+}
 
-    free(xbuf);
-    free(xgbuf);
-    free(wrow);
-    free(wgrow);
+/* ==== vec_dot ==== */
+static PyObject* fastops_vec_dot(PyObject* self, PyObject* args) {
+    PyObject *a_obj, *b_obj;
+    if (!PyArg_ParseTuple(args, "OO", &a_obj, &b_obj)) return NULL;
+    DArr a, b;
+    if (darr_get(&a, a_obj, 0) < 0) return NULL;
+    if (darr_get(&b, b_obj, 0) < 0) { darr_done(&a); return NULL; }
+    double s = 0.0;
+    for (Py_ssize_t i = 0; i < a.n; i++) s += a.ptr[i] * b.ptr[i];
+    darr_done(&a); darr_done(&b);
+    return PyFloat_FromDouble(s);
+}
+
+/* ==== vec_axpy: y += alpha * x ==== */
+static PyObject* fastops_vec_axpy(PyObject* self, PyObject* args) {
+    double alpha;
+    PyObject *x_obj, *y_obj;
+    if (!PyArg_ParseTuple(args, "dOO", &alpha, &x_obj, &y_obj)) return NULL;
+    DArr x, y;
+    if (darr_get(&x, x_obj, 0) < 0) return NULL;
+    if (darr_get(&y, y_obj, 1) < 0) { darr_done(&x); return NULL; }
+    for (Py_ssize_t i = 0; i < x.n; i++) y.ptr[i] += alpha * x.ptr[i];
+    darr_sync(&y, y_obj);
+    darr_done(&x); darr_done(&y);
     Py_RETURN_NONE;
 }
 
-/* ---- RMSNorm forward: returns (out_list, scale_float) ---- */
-static PyObject* fastops_rmsnorm_forward(PyObject* self, PyObject* args) {
-    PyObject *xd;
-    if (!PyArg_ParseTuple(args, "O", &xd))
+/* ==== matvec: out = W @ x ==== */
+static PyObject* fastops_matvec(PyObject* self, PyObject* args) {
+    PyObject *W, *x_obj;
+    if (!PyArg_ParseTuple(args, "OO", &W, &x_obj)) return NULL;
+    Py_ssize_t nrow = PyList_GET_SIZE(W);
+    DArr x;
+    if (darr_get(&x, x_obj, 0) < 0) return NULL;
+    Py_ssize_t ncol = x.n;
+    double *out = (double *)malloc(nrow * sizeof(double));
+    if (!out) { darr_done(&x); return PyErr_NoMemory(); }
+
+    for (Py_ssize_t i = 0; i < nrow; i++) {
+        DArr wi;
+        if (darr_get(&wi, PyList_GET_ITEM(W, i), 0) < 0) {
+            darr_done(&x); free(out); return NULL;
+        }
+        double s = 0.0;
+        for (Py_ssize_t j = 0; j < ncol; j++) s += wi.ptr[j] * x.ptr[j];
+        out[i] = s;
+        darr_done(&wi);
+    }
+    darr_done(&x);
+    PyObject *result = darr_new(out, nrow);
+    free(out);
+    return result;
+}
+
+/* ==== linear_backward ==== */
+static PyObject* fastops_linear_backward(PyObject* self, PyObject* args) {
+    PyObject *og_obj, *wd, *wgrad, *xd_obj, *xg_obj;
+    if (!PyArg_ParseTuple(args, "OOOOO", &og_obj, &wd, &wgrad, &xd_obj, &xg_obj))
         return NULL;
 
-    Py_ssize_t n = PyList_GET_SIZE(xd);
-    double ms = 0.0;
-    double *xbuf = list_to_buf(xd, n);
-    if (!xbuf) return PyErr_NoMemory();
+    DArr og, xd, xg;
+    if (darr_get(&og, og_obj, 0) < 0) return NULL;
+    if (darr_get(&xd, xd_obj, 0) < 0) { darr_done(&og); return NULL; }
+    if (darr_get(&xg, xg_obj, 1) < 0) { darr_done(&og); darr_done(&xd); return NULL; }
 
-    for (Py_ssize_t i = 0; i < n; i++)
-        ms += xbuf[i] * xbuf[i];
+    Py_ssize_t n_out = og.n, n_in = xd.n;
+
+    for (Py_ssize_t i = 0; i < n_out; i++) {
+        double gi = og.ptr[i];
+        if (gi == 0.0) continue;
+        PyObject *wi_obj = PyList_GET_ITEM(wd, i);
+        PyObject *wgi_obj = PyList_GET_ITEM(wgrad, i);
+        DArr wi, wgi;
+        if (darr_get(&wi, wi_obj, 0) < 0) goto fail;
+        if (darr_get(&wgi, wgi_obj, 1) < 0) { darr_done(&wi); goto fail; }
+        for (Py_ssize_t j = 0; j < n_in; j++) {
+            wgi.ptr[j] += gi * xd.ptr[j];
+            xg.ptr[j] += gi * wi.ptr[j];
+        }
+        darr_sync(&wgi, wgi_obj);
+        darr_done(&wi);
+        darr_done(&wgi);
+    }
+
+    darr_sync(&xg, xg_obj);
+    darr_done(&og); darr_done(&xd); darr_done(&xg);
+    Py_RETURN_NONE;
+
+fail:
+    darr_sync(&xg, xg_obj);
+    darr_done(&og); darr_done(&xd); darr_done(&xg);
+    return NULL;
+}
+
+/* ==== rmsnorm forward ==== */
+static PyObject* fastops_rmsnorm_forward(PyObject* self, PyObject* args) {
+    PyObject *xd_obj;
+    if (!PyArg_ParseTuple(args, "O", &xd_obj)) return NULL;
+    DArr xd;
+    if (darr_get(&xd, xd_obj, 0) < 0) return NULL;
+    Py_ssize_t n = xd.n;
+
+    double ms = 0.0;
+    for (Py_ssize_t i = 0; i < n; i++) ms += xd.ptr[i] * xd.ptr[i];
     ms /= n;
     double scale = 1.0 / sqrt(ms + 1e-5);
 
-    PyObject *out = PyList_New(n);
-    if (!out) { free(xbuf); return NULL; }
-    for (Py_ssize_t i = 0; i < n; i++)
-        PyList_SET_ITEM(out, i, PyFloat_FromDouble(xbuf[i] * scale));
+    double *out = (double *)malloc(n * sizeof(double));
+    if (!out) { darr_done(&xd); return PyErr_NoMemory(); }
+    for (Py_ssize_t i = 0; i < n; i++) out[i] = xd.ptr[i] * scale;
+    darr_done(&xd);
 
-    free(xbuf);
+    PyObject *out_arr = darr_new(out, n);
+    free(out);
     PyObject *result = PyTuple_New(2);
-    PyTuple_SET_ITEM(result, 0, out);
+    PyTuple_SET_ITEM(result, 0, out_arr);
     PyTuple_SET_ITEM(result, 1, PyFloat_FromDouble(scale));
     return result;
 }
 
-/* ---- RMSNorm backward: mutates x.grad in-place ---- */
+/* ==== rmsnorm backward ==== */
 static PyObject* fastops_rmsnorm_backward(PyObject* self, PyObject* args) {
-    PyObject *out_grad, *xd, *xgrad;
+    PyObject *og_obj, *xd_obj, *xg_obj;
     double scale;
-    if (!PyArg_ParseTuple(args, "OOdO", &out_grad, &xd, &scale, &xgrad))
+    if (!PyArg_ParseTuple(args, "OOdO", &og_obj, &xd_obj, &scale, &xg_obj))
         return NULL;
 
-    Py_ssize_t n = PyList_GET_SIZE(xd);
-    double *ogbuf = list_to_buf(out_grad, n);
-    double *xbuf = list_to_buf(xd, n);
-    double *xgbuf = list_to_buf(xgrad, n);
-    if (!ogbuf || !xbuf || !xgbuf) {
-        free(ogbuf); free(xbuf); free(xgbuf);
-        return PyErr_NoMemory();
-    }
+    DArr og, xd, xg;
+    if (darr_get(&og, og_obj, 0) < 0) return NULL;
+    if (darr_get(&xd, xd_obj, 0) < 0) { darr_done(&og); return NULL; }
+    if (darr_get(&xg, xg_obj, 1) < 0) { darr_done(&og); darr_done(&xd); return NULL; }
 
+    Py_ssize_t n = xd.n;
     double dot = 0.0;
-    for (Py_ssize_t i = 0; i < n; i++)
-        dot += ogbuf[i] * xbuf[i];
-
+    for (Py_ssize_t i = 0; i < n; i++) dot += og.ptr[i] * xd.ptr[i];
     double s3n = scale * scale * scale / n;
     for (Py_ssize_t j = 0; j < n; j++)
-        xgbuf[j] += ogbuf[j] * scale - s3n * xbuf[j] * dot;
+        xg.ptr[j] += og.ptr[j] * scale - s3n * xd.ptr[j] * dot;
 
-    buf_to_list(xgbuf, xgrad, n);
-    free(ogbuf); free(xbuf); free(xgbuf);
+    darr_sync(&xg, xg_obj);
+    darr_done(&og); darr_done(&xd); darr_done(&xg);
     Py_RETURN_NONE;
 }
 
-/* ---- Squared ReLU forward: returns new list ---- */
+/* ==== squared_relu forward ==== */
 static PyObject* fastops_squared_relu_forward(PyObject* self, PyObject* args) {
-    PyObject *xd;
-    if (!PyArg_ParseTuple(args, "O", &xd))
-        return NULL;
+    PyObject *xd_obj;
+    if (!PyArg_ParseTuple(args, "O", &xd_obj)) return NULL;
+    DArr xd;
+    if (darr_get(&xd, xd_obj, 0) < 0) return NULL;
+    Py_ssize_t n = xd.n;
 
-    Py_ssize_t n = PyList_GET_SIZE(xd);
-    PyObject *out = PyList_New(n);
-    if (!out) return NULL;
-
+    double *out = (double *)malloc(n * sizeof(double));
+    if (!out) { darr_done(&xd); return PyErr_NoMemory(); }
     for (Py_ssize_t i = 0; i < n; i++) {
-        double xi = PyFloat_AS_DOUBLE(PyList_GET_ITEM(xd, i));
-        double v = xi > 0.0 ? xi * xi : 0.0;
-        PyList_SET_ITEM(out, i, PyFloat_FromDouble(v));
+        double v = xd.ptr[i];
+        out[i] = v > 0.0 ? v * v : 0.0;
     }
-    return out;
+    darr_done(&xd);
+    PyObject *result = darr_new(out, n);
+    free(out);
+    return result;
 }
 
-/* ---- Squared ReLU backward: mutates x.grad in-place ---- */
+/* ==== squared_relu backward ==== */
 static PyObject* fastops_squared_relu_backward(PyObject* self, PyObject* args) {
-    PyObject *xd, *out_grad, *xgrad;
-    if (!PyArg_ParseTuple(args, "OOO", &xd, &out_grad, &xgrad))
-        return NULL;
+    PyObject *xd_obj, *og_obj, *xg_obj;
+    if (!PyArg_ParseTuple(args, "OOO", &xd_obj, &og_obj, &xg_obj)) return NULL;
+    DArr xd, og, xg;
+    if (darr_get(&xd, xd_obj, 0) < 0) return NULL;
+    if (darr_get(&og, og_obj, 0) < 0) { darr_done(&xd); return NULL; }
+    if (darr_get(&xg, xg_obj, 1) < 0) { darr_done(&xd); darr_done(&og); return NULL; }
 
-    Py_ssize_t n = PyList_GET_SIZE(xd);
-    for (Py_ssize_t i = 0; i < n; i++) {
-        double xi = PyFloat_AS_DOUBLE(PyList_GET_ITEM(xd, i));
-        if (xi > 0.0) {
-            double gi = PyFloat_AS_DOUBLE(PyList_GET_ITEM(out_grad, i));
-            double old = PyFloat_AS_DOUBLE(PyList_GET_ITEM(xgrad, i));
-            PyObject *nv = PyFloat_FromDouble(old + 2.0 * xi * gi);
-            PyList_SET_ITEM(xgrad, i, nv);
-        }
-    }
+    for (Py_ssize_t i = 0; i < xd.n; i++)
+        if (xd.ptr[i] > 0.0)
+            xg.ptr[i] += 2.0 * xd.ptr[i] * og.ptr[i];
+
+    darr_sync(&xg, xg_obj);
+    darr_done(&xd); darr_done(&og); darr_done(&xg);
     Py_RETURN_NONE;
 }
 
-/* ---- tensor_add forward: returns new list ---- */
+/* ==== tensor_add forward ==== */
 static PyObject* fastops_tensor_add(PyObject* self, PyObject* args) {
-    PyObject *a, *b;
-    if (!PyArg_ParseTuple(args, "OO", &a, &b))
-        return NULL;
+    PyObject *a_obj, *b_obj;
+    if (!PyArg_ParseTuple(args, "OO", &a_obj, &b_obj)) return NULL;
+    DArr a, b;
+    if (darr_get(&a, a_obj, 0) < 0) return NULL;
+    if (darr_get(&b, b_obj, 0) < 0) { darr_done(&a); return NULL; }
+    Py_ssize_t n = a.n;
 
-    Py_ssize_t n = PyList_GET_SIZE(a);
-    PyObject *out = PyList_New(n);
-    if (!out) return NULL;
+    double *out = (double *)malloc(n * sizeof(double));
+    if (!out) { darr_done(&a); darr_done(&b); return PyErr_NoMemory(); }
+    for (Py_ssize_t i = 0; i < n; i++) out[i] = a.ptr[i] + b.ptr[i];
+    darr_done(&a); darr_done(&b);
 
-    for (Py_ssize_t i = 0; i < n; i++) {
-        double ai = PyFloat_AS_DOUBLE(PyList_GET_ITEM(a, i));
-        double bi = PyFloat_AS_DOUBLE(PyList_GET_ITEM(b, i));
-        PyList_SET_ITEM(out, i, PyFloat_FromDouble(ai + bi));
-    }
-    return out;
+    PyObject *result = darr_new(out, n);
+    free(out);
+    return result;
 }
 
-/* ---- tensor_add backward: mutates a.grad and b.grad in-place ---- */
+/* ==== tensor_add backward ==== */
 static PyObject* fastops_tensor_add_backward(PyObject* self, PyObject* args) {
-    PyObject *out_grad, *agrad, *bgrad;
-    if (!PyArg_ParseTuple(args, "OOO", &out_grad, &agrad, &bgrad))
-        return NULL;
+    PyObject *og_obj, *ag_obj, *bg_obj;
+    if (!PyArg_ParseTuple(args, "OOO", &og_obj, &ag_obj, &bg_obj)) return NULL;
+    DArr og, ag, bg;
+    if (darr_get(&og, og_obj, 0) < 0) return NULL;
+    if (darr_get(&ag, ag_obj, 1) < 0) { darr_done(&og); return NULL; }
+    if (darr_get(&bg, bg_obj, 1) < 0) { darr_done(&og); darr_done(&ag); return NULL; }
 
-    Py_ssize_t n = PyList_GET_SIZE(out_grad);
-    for (Py_ssize_t i = 0; i < n; i++) {
-        double g = PyFloat_AS_DOUBLE(PyList_GET_ITEM(out_grad, i));
-        double ag = PyFloat_AS_DOUBLE(PyList_GET_ITEM(agrad, i));
-        double bg = PyFloat_AS_DOUBLE(PyList_GET_ITEM(bgrad, i));
-        PyList_SET_ITEM(agrad, i, PyFloat_FromDouble(ag + g));
-        PyList_SET_ITEM(bgrad, i, PyFloat_FromDouble(bg + g));
+    for (Py_ssize_t i = 0; i < og.n; i++) {
+        ag.ptr[i] += og.ptr[i];
+        bg.ptr[i] += og.ptr[i];
     }
+
+    darr_sync(&ag, ag_obj); darr_sync(&bg, bg_obj);
+    darr_done(&og); darr_done(&ag); darr_done(&bg);
     Py_RETURN_NONE;
 }
 
-/* ---- Cross entropy forward: returns (loss, probs_list) ---- */
+/* ==== cross_entropy forward ==== */
 static PyObject* fastops_cross_entropy_forward(PyObject* self, PyObject* args) {
-    PyObject *logits;
+    PyObject *logits_obj;
     Py_ssize_t target;
-    if (!PyArg_ParseTuple(args, "On", &logits, &target))
-        return NULL;
+    if (!PyArg_ParseTuple(args, "On", &logits_obj, &target)) return NULL;
+    DArr lg;
+    if (darr_get(&lg, logits_obj, 0) < 0) return NULL;
+    Py_ssize_t n = lg.n;
 
-    Py_ssize_t n = PyList_GET_SIZE(logits);
-    double *buf = list_to_buf(logits, n);
-    if (!buf) return PyErr_NoMemory();
+    double *buf = (double *)malloc(n * sizeof(double));
+    if (!buf) { darr_done(&lg); return PyErr_NoMemory(); }
+    memcpy(buf, lg.ptr, n * sizeof(double));
+    darr_done(&lg);
 
     /* softmax */
     double max_val = buf[0];
     for (Py_ssize_t i = 1; i < n; i++)
         if (buf[i] > max_val) max_val = buf[i];
-
     double total = 0.0;
     for (Py_ssize_t i = 0; i < n; i++) {
         buf[i] = exp(buf[i] - max_val);
         total += buf[i];
     }
-    for (Py_ssize_t i = 0; i < n; i++)
-        buf[i] /= total;
+    for (Py_ssize_t i = 0; i < n; i++) buf[i] /= total;
 
     double loss = -log(buf[target]);
-
-    PyObject *probs = PyList_New(n);
-    if (!probs) { free(buf); return NULL; }
-    buf_to_new_list(buf, probs, n);
-
+    PyObject *probs = darr_new(buf, n);
     free(buf);
+
     PyObject *result = PyTuple_New(2);
     PyTuple_SET_ITEM(result, 0, PyFloat_FromDouble(loss));
     PyTuple_SET_ITEM(result, 1, probs);
     return result;
 }
 
-/* ---- Cross entropy backward: mutates logits.grad in-place ---- */
+/* ==== cross_entropy backward ==== */
 static PyObject* fastops_cross_entropy_backward(PyObject* self, PyObject* args) {
-    PyObject *probs, *logits_grad;
+    PyObject *probs_obj, *lg_obj;
     double g;
     Py_ssize_t target;
-    if (!PyArg_ParseTuple(args, "dOnO", &g, &probs, &target, &logits_grad))
+    if (!PyArg_ParseTuple(args, "dOnO", &g, &probs_obj, &target, &lg_obj))
         return NULL;
 
-    Py_ssize_t n = PyList_GET_SIZE(probs);
-    for (Py_ssize_t i = 0; i < n; i++) {
-        double pi = PyFloat_AS_DOUBLE(PyList_GET_ITEM(probs, i));
-        double old = PyFloat_AS_DOUBLE(PyList_GET_ITEM(logits_grad, i));
-        double delta = (i == target) ? (pi - 1.0) : pi;
-        PyList_SET_ITEM(logits_grad, i, PyFloat_FromDouble(old + g * delta));
+    DArr probs, lg;
+    if (darr_get(&probs, probs_obj, 0) < 0) return NULL;
+    if (darr_get(&lg, lg_obj, 1) < 0) { darr_done(&probs); return NULL; }
+
+    for (Py_ssize_t i = 0; i < probs.n; i++) {
+        double delta = (i == target) ? (probs.ptr[i] - 1.0) : probs.ptr[i];
+        lg.ptr[i] += g * delta;
     }
+
+    darr_sync(&lg, lg_obj);
+    darr_done(&probs); darr_done(&lg);
     Py_RETURN_NONE;
 }
 
-/*
- * Adam optimizer update for one Param (2D weight matrix).
- * Mutates data, m, v in-place.  Reads grad.
- * adam_update(data, grad, m, v, lr_t, beta1, beta2, bc1, bc2, eps)
- *   data, grad, m, v are list-of-lists (nout x nin).
- */
+/* ==== Adam optimizer update (2D weight matrix) ==== */
 static PyObject* fastops_adam_update(PyObject* self, PyObject* args) {
     PyObject *pdata, *pgrad, *pm, *pv;
     double lr_t, beta1, beta2, bc1, bc2, eps;
@@ -345,96 +394,61 @@ static PyObject* fastops_adam_update(PyObject* self, PyObject* args) {
         return NULL;
 
     Py_ssize_t nout = PyList_GET_SIZE(pdata);
+    if (nout == 0) Py_RETURN_NONE;
     double one_m_b1 = 1.0 - beta1;
     double one_m_b2 = 1.0 - beta2;
 
-    /* Pre-determine row size from first row */
-    if (nout == 0) Py_RETURN_NONE;
-    Py_ssize_t nin = PyList_GET_SIZE(PyList_GET_ITEM(pdata, 0));
-
-    /* Allocate row buffers once */
-    double *db = (double *)malloc(nin * sizeof(double));
-    double *gb = (double *)malloc(nin * sizeof(double));
-    double *mb = (double *)malloc(nin * sizeof(double));
-    double *vb = (double *)malloc(nin * sizeof(double));
-    if (!db || !gb || !mb || !vb) {
-        free(db); free(gb); free(mb); free(vb);
-        return PyErr_NoMemory();
-    }
-
     for (Py_ssize_t i = 0; i < nout; i++) {
-        PyObject *pd = PyList_GET_ITEM(pdata, i);
-        PyObject *pg = PyList_GET_ITEM(pgrad, i);
-        PyObject *pmr = PyList_GET_ITEM(pm, i);
-        PyObject *pvr = PyList_GET_ITEM(pv, i);
+        PyObject *pd_obj = PyList_GET_ITEM(pdata, i);
+        PyObject *pg_obj = PyList_GET_ITEM(pgrad, i);
+        PyObject *pm_obj = PyList_GET_ITEM(pm, i);
+        PyObject *pv_obj = PyList_GET_ITEM(pv, i);
 
-        /* Extract to C buffers */
+        DArr pd, pg, pmr, pvr;
+        if (darr_get(&pd, pd_obj, 1) < 0) return NULL;
+        if (darr_get(&pg, pg_obj, 0) < 0) { darr_done(&pd); return NULL; }
+        if (darr_get(&pmr, pm_obj, 1) < 0) { darr_done(&pd); darr_done(&pg); return NULL; }
+        if (darr_get(&pvr, pv_obj, 1) < 0) { darr_done(&pd); darr_done(&pg); darr_done(&pmr); return NULL; }
+
+        Py_ssize_t nin = pd.n;
         for (Py_ssize_t j = 0; j < nin; j++) {
-            db[j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(pd, j));
-            gb[j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(pg, j));
-            mb[j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(pmr, j));
-            vb[j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(pvr, j));
+            double g = pg.ptr[j];
+            pmr.ptr[j] = beta1 * pmr.ptr[j] + one_m_b1 * g;
+            pvr.ptr[j] = beta2 * pvr.ptr[j] + one_m_b2 * g * g;
+            pd.ptr[j] -= lr_t * (pmr.ptr[j] / bc1) / (sqrt(pvr.ptr[j] / bc2) + eps);
         }
 
-        /* Pure C computation - no Python API calls in inner loop */
-        for (Py_ssize_t j = 0; j < nin; j++) {
-            double g = gb[j];
-            mb[j] = beta1 * mb[j] + one_m_b1 * g;
-            vb[j] = beta2 * vb[j] + one_m_b2 * g * g;
-            db[j] -= lr_t * (mb[j] / bc1) / (sqrt(vb[j] / bc2) + eps);
-        }
-
-        /* Write back in bulk */
-        buf_to_list(db, pd, nin);
-        buf_to_list(mb, pmr, nin);
-        buf_to_list(vb, pvr, nin);
+        darr_sync(&pd, pd_obj);
+        darr_sync(&pmr, pm_obj);
+        darr_sync(&pvr, pv_obj);
+        darr_done(&pd); darr_done(&pg); darr_done(&pmr); darr_done(&pvr);
     }
-
-    free(db); free(gb); free(mb); free(vb);
     Py_RETURN_NONE;
 }
 
-/*
- * Fused attention forward.
- * attention_forward(q_data, key_data_list, val_data_list, n_head, head_dim)
- *   q_data     : list[float] of length n_head * head_dim
- *   key_data_list : list of list[float], each of length n_head * head_dim
- *   val_data_list : list of list[float], each of length n_head * head_dim
- * Returns (out_data: list[float], attn_weights: list of list[float] per head)
- */
+/* ==== attention forward ==== */
 static PyObject* fastops_attention_forward(PyObject* self, PyObject* args) {
     PyObject *qd_obj, *keys_list, *vals_list;
     int n_head, head_dim;
-    if (!PyArg_ParseTuple(args, "OOOii", &qd_obj, &keys_list, &vals_list, &n_head, &head_dim))
+    if (!PyArg_ParseTuple(args, "OOOii", &qd_obj, &keys_list, &vals_list,
+                          &n_head, &head_dim))
         return NULL;
 
     Py_ssize_t T = PyList_GET_SIZE(keys_list);
     Py_ssize_t dim = n_head * head_dim;
 
-    double *qd = list_to_buf(qd_obj, dim);
-    if (!qd) return PyErr_NoMemory();
+    DArr qd;
+    if (darr_get(&qd, qd_obj, 0) < 0) return NULL;
 
-    /* extract all key and value data into contiguous C arrays */
-    double *kbuf = (double *)malloc(T * dim * sizeof(double));
-    double *vbuf = (double *)malloc(T * dim * sizeof(double));
-    if (!kbuf || !vbuf) {
-        free(qd); free(kbuf); free(vbuf);
-        return PyErr_NoMemory();
-    }
-    for (Py_ssize_t t = 0; t < T; t++) {
-        PyObject *krow = PyList_GET_ITEM(keys_list, t);
-        PyObject *vrow = PyList_GET_ITEM(vals_list, t);
-        for (Py_ssize_t j = 0; j < dim; j++) {
-            kbuf[t * dim + j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(krow, j));
-            vbuf[t * dim + j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(vrow, j));
-        }
-    }
+    double *kbuf = rows_to_flat(keys_list, T, dim);
+    if (!kbuf) { darr_done(&qd); return NULL; }
+    double *vbuf = rows_to_flat(vals_list, T, dim);
+    if (!vbuf) { darr_done(&qd); free(kbuf); return NULL; }
 
     double *out = (double *)calloc(dim, sizeof(double));
-    /* store all attention weights for backward */
     double *all_aw = (double *)malloc(n_head * T * sizeof(double));
     if (!out || !all_aw) {
-        free(qd); free(kbuf); free(vbuf); free(out); free(all_aw);
+        darr_done(&qd); free(kbuf); free(vbuf); free(out); free(all_aw);
         return PyErr_NoMemory();
     }
 
@@ -442,17 +456,15 @@ static PyObject* fastops_attention_forward(PyObject* self, PyObject* args) {
 
     for (int h = 0; h < n_head; h++) {
         Py_ssize_t hs = h * head_dim;
-        /* compute attention logits */
         double max_val = -1e30;
         for (Py_ssize_t t = 0; t < T; t++) {
             double s = 0.0;
             for (int j = 0; j < head_dim; j++)
-                s += qd[hs + j] * kbuf[t * dim + hs + j];
+                s += qd.ptr[hs + j] * kbuf[t * dim + hs + j];
             s /= scale;
             all_aw[h * T + t] = s;
             if (s > max_val) max_val = s;
         }
-        /* softmax */
         double total = 0.0;
         for (Py_ssize_t t = 0; t < T; t++) {
             all_aw[h * T + t] = exp(all_aw[h * T + t] - max_val);
@@ -460,7 +472,6 @@ static PyObject* fastops_attention_forward(PyObject* self, PyObject* args) {
         }
         for (Py_ssize_t t = 0; t < T; t++)
             all_aw[h * T + t] /= total;
-        /* weighted sum of values */
         for (int j = 0; j < head_dim; j++) {
             double s = 0.0;
             for (Py_ssize_t t = 0; t < T; t++)
@@ -469,12 +480,10 @@ static PyObject* fastops_attention_forward(PyObject* self, PyObject* args) {
         }
     }
 
-    /* build output list */
-    PyObject *out_list = PyList_New(dim);
-    if (!out_list) { free(qd); free(kbuf); free(vbuf); free(out); free(all_aw); return NULL; }
-    buf_to_new_list(out, out_list, dim);
+    darr_done(&qd);
+    PyObject *out_arr = darr_new(out, dim);
 
-    /* build attention weights as list of lists (per head) */
+    /* build attention weights as list of lists (per head) for backward */
     PyObject *aw_list = PyList_New(n_head);
     for (int h = 0; h < n_head; h++) {
         PyObject *hw = PyList_New(T);
@@ -483,21 +492,14 @@ static PyObject* fastops_attention_forward(PyObject* self, PyObject* args) {
         PyList_SET_ITEM(aw_list, h, hw);
     }
 
-    free(qd); free(kbuf); free(vbuf); free(out); free(all_aw);
-
+    free(kbuf); free(vbuf); free(out); free(all_aw);
     PyObject *result = PyTuple_New(2);
-    PyTuple_SET_ITEM(result, 0, out_list);
+    PyTuple_SET_ITEM(result, 0, out_arr);
     PyTuple_SET_ITEM(result, 1, aw_list);
     return result;
 }
 
-/*
- * Fused attention backward.
- * attention_backward(out_grad, q_data, key_data_list, val_data_list,
- *                    attn_weights, q_grad, key_grad_list, val_grad_list,
- *                    n_head, head_dim)
- * Mutates q_grad, key_grad_list entries, val_grad_list entries in-place.
- */
+/* ==== attention backward ==== */
 static PyObject* fastops_attention_backward(PyObject* self, PyObject* args) {
     PyObject *og_obj, *qd_obj, *keys_list, *vals_list, *aw_list;
     PyObject *qg_obj, *kgrad_list, *vgrad_list;
@@ -512,42 +514,28 @@ static PyObject* fastops_attention_backward(PyObject* self, PyObject* args) {
     Py_ssize_t dim = n_head * head_dim;
     double scale = sqrt((double)head_dim);
 
-    /* extract to C buffers */
-    double *og = list_to_buf(og_obj, dim);
-    double *qd = list_to_buf(qd_obj, dim);
-    double *qg = list_to_buf(qg_obj, dim);
-    if (!og || !qd || !qg) {
-        free(og); free(qd); free(qg);
-        return PyErr_NoMemory();
-    }
+    DArr og, qd, qg;
+    if (darr_get(&og, og_obj, 0) < 0) return NULL;
+    if (darr_get(&qd, qd_obj, 0) < 0) { darr_done(&og); return NULL; }
+    if (darr_get(&qg, qg_obj, 1) < 0) { darr_done(&og); darr_done(&qd); return NULL; }
 
-    double *kbuf = (double *)malloc(T * dim * sizeof(double));
-    double *vbuf = (double *)malloc(T * dim * sizeof(double));
-    double *kgbuf = (double *)malloc(T * dim * sizeof(double));
-    double *vgbuf = (double *)malloc(T * dim * sizeof(double));
+    double *kbuf = rows_to_flat(keys_list, T, dim);
+    double *vbuf = rows_to_flat(vals_list, T, dim);
+    double *kgbuf = rows_to_flat(kgrad_list, T, dim);
+    double *vgbuf = rows_to_flat(vgrad_list, T, dim);
     if (!kbuf || !vbuf || !kgbuf || !vgbuf) {
-        free(og); free(qd); free(qg);
+        darr_done(&og); darr_done(&qd); darr_done(&qg);
         free(kbuf); free(vbuf); free(kgbuf); free(vgbuf);
         return PyErr_NoMemory();
     }
 
-    for (Py_ssize_t t = 0; t < T; t++) {
-        PyObject *krow = PyList_GET_ITEM(keys_list, t);
-        PyObject *vrow = PyList_GET_ITEM(vals_list, t);
-        PyObject *kgrow = PyList_GET_ITEM(kgrad_list, t);
-        PyObject *vgrow = PyList_GET_ITEM(vgrad_list, t);
-        for (Py_ssize_t j = 0; j < dim; j++) {
-            kbuf[t * dim + j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(krow, j));
-            vbuf[t * dim + j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(vrow, j));
-            kgbuf[t * dim + j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(kgrow, j));
-            vgbuf[t * dim + j] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(vgrow, j));
-        }
-    }
-
     /* extract attention weights */
     double *aw = (double *)malloc(n_head * T * sizeof(double));
-    if (!aw) {
-        free(og); free(qd); free(qg); free(kbuf); free(vbuf); free(kgbuf); free(vgbuf);
+    double *d_attn = (double *)malloc(T * sizeof(double));
+    if (!aw || !d_attn) {
+        darr_done(&og); darr_done(&qd); darr_done(&qg);
+        free(kbuf); free(vbuf); free(kgbuf); free(vgbuf);
+        free(aw); free(d_attn);
         return PyErr_NoMemory();
     }
     for (int h = 0; h < n_head; h++) {
@@ -556,20 +544,11 @@ static PyObject* fastops_attention_backward(PyObject* self, PyObject* args) {
             aw[h * T + t] = PyFloat_AS_DOUBLE(PyList_GET_ITEM(hw, t));
     }
 
-    double *d_attn = (double *)malloc(T * sizeof(double));
-    if (!d_attn) {
-        free(og); free(qd); free(qg); free(kbuf); free(vbuf);
-        free(kgbuf); free(vgbuf); free(aw);
-        return PyErr_NoMemory();
-    }
-
     for (int h = 0; h < n_head; h++) {
         Py_ssize_t hs = h * head_dim;
         memset(d_attn, 0, T * sizeof(double));
-
-        /* d_attn[t] += g * v_data[t][idx]  and  v_grad[t][idx] += g * aw[t] */
         for (int j = 0; j < head_dim; j++) {
-            double g = og[hs + j];
+            double g = og.ptr[hs + j];
             if (g == 0.0) continue;
             Py_ssize_t idx = hs + j;
             for (Py_ssize_t t = 0; t < T; t++) {
@@ -577,83 +556,65 @@ static PyObject* fastops_attention_backward(PyObject* self, PyObject* args) {
                 d_attn[t] += g * vbuf[t * dim + idx];
             }
         }
-
-        /* softmax backward */
         double dot = 0.0;
         for (Py_ssize_t t = 0; t < T; t++)
             dot += aw[h * T + t] * d_attn[t];
-
         for (Py_ssize_t t = 0; t < T; t++) {
             double dl = aw[h * T + t] * (d_attn[t] - dot) / scale;
             if (dl == 0.0) continue;
             for (int j = 0; j < head_dim; j++) {
                 Py_ssize_t idx = hs + j;
-                qg[idx] += dl * kbuf[t * dim + idx];
-                kgbuf[t * dim + idx] += dl * qd[idx];
+                qg.ptr[idx] += dl * kbuf[t * dim + idx];
+                kgbuf[t * dim + idx] += dl * qd.ptr[idx];
             }
         }
     }
 
-    /* write back */
-    buf_to_list(qg, qg_obj, dim);
-    for (Py_ssize_t t = 0; t < T; t++) {
-        PyObject *kgrow = PyList_GET_ITEM(kgrad_list, t);
-        PyObject *vgrow = PyList_GET_ITEM(vgrad_list, t);
-        buf_to_list(kgbuf + t * dim, kgrow, dim);
-        buf_to_list(vgbuf + t * dim, vgrow, dim);
-    }
-
-    free(og); free(qd); free(qg);
+    /* write back grads */
+    darr_sync(&qg, qg_obj);
+    darr_done(&og); darr_done(&qd); darr_done(&qg);
+    flat_to_rows(kgbuf, kgrad_list, T, dim);
+    flat_to_rows(vgbuf, vgrad_list, T, dim);
     free(kbuf); free(vbuf); free(kgbuf); free(vgbuf);
     free(aw); free(d_attn);
     Py_RETURN_NONE;
 }
 
-/*
- * Fused zero_grad: sets all elements of a 2D list-of-lists to 0.0
- * zero_grad(grad) where grad is list[list[float]]
- */
+/* ==== zero_grad: zero all rows of a 2D gradient ==== */
 static PyObject* fastops_zero_grad(PyObject* self, PyObject* args) {
     PyObject *grad;
-    if (!PyArg_ParseTuple(args, "O", &grad))
-        return NULL;
+    if (!PyArg_ParseTuple(args, "O", &grad)) return NULL;
 
     Py_ssize_t nout = PyList_GET_SIZE(grad);
     for (Py_ssize_t i = 0; i < nout; i++) {
         PyObject *row = PyList_GET_ITEM(grad, i);
-        Py_ssize_t nin = PyList_GET_SIZE(row);
-        /* Replace entire row with a fresh list of zeros — faster than per-element */
-        PyObject *new_row = PyList_New(nin);
-        if (!new_row) return NULL;
-        for (Py_ssize_t j = 0; j < nin; j++)
-            PyList_SET_ITEM(new_row, j, PyFloat_FromDouble(0.0));
-        /* Replace in the outer list */
-        Py_INCREF(new_row);
-        PyObject *old = PyList_GET_ITEM(grad, i);
-        Py_DECREF(old);
-        PyList_SET_ITEM(grad, i, new_row);
+        DArr d;
+        if (darr_get(&d, row, 1) < 0) return NULL;
+        memset(d.ptr, 0, d.n * sizeof(double));
+        darr_sync(&d, row);
+        darr_done(&d);
     }
     Py_RETURN_NONE;
 }
 
-
+/* ==== method table ==== */
 static PyMethodDef FastopsMethods[] = {
-    {"vec_dot",             fastops_vec_dot,             METH_VARARGS, "Dot product of two lists"},
-    {"vec_axpy",            fastops_vec_axpy,            METH_VARARGS, "y += alpha * x (in-place)"},
-    {"matvec",              fastops_matvec,              METH_VARARGS, "Matrix-vector multiply W @ x"},
-    {"linear_backward",     fastops_linear_backward,     METH_VARARGS, "Fused linear backward pass"},
-    {"rmsnorm_forward",     fastops_rmsnorm_forward,     METH_VARARGS, "RMSNorm forward pass"},
-    {"rmsnorm_backward",    fastops_rmsnorm_backward,    METH_VARARGS, "RMSNorm backward pass"},
+    {"vec_dot",              fastops_vec_dot,              METH_VARARGS, "Dot product"},
+    {"vec_axpy",             fastops_vec_axpy,             METH_VARARGS, "y += alpha * x"},
+    {"matvec",               fastops_matvec,               METH_VARARGS, "W @ x"},
+    {"linear_backward",      fastops_linear_backward,      METH_VARARGS, "Linear backward"},
+    {"rmsnorm_forward",      fastops_rmsnorm_forward,      METH_VARARGS, "RMSNorm forward"},
+    {"rmsnorm_backward",     fastops_rmsnorm_backward,     METH_VARARGS, "RMSNorm backward"},
     {"squared_relu_forward", fastops_squared_relu_forward, METH_VARARGS, "Squared ReLU forward"},
-    {"squared_relu_backward", fastops_squared_relu_backward, METH_VARARGS, "Squared ReLU backward"},
-    {"tensor_add",          fastops_tensor_add,          METH_VARARGS, "Element-wise add"},
-    {"tensor_add_backward", fastops_tensor_add_backward, METH_VARARGS, "Element-wise add backward"},
-    {"cross_entropy_forward", fastops_cross_entropy_forward, METH_VARARGS, "Cross-entropy forward"},
-    {"cross_entropy_backward", fastops_cross_entropy_backward, METH_VARARGS, "Cross-entropy backward"},
-    {"adam_update",         fastops_adam_update,          METH_VARARGS, "Adam optimizer update"},
-    {"attention_forward",   fastops_attention_forward,    METH_VARARGS, "Fused attention forward"},
-    {"attention_backward",  fastops_attention_backward,   METH_VARARGS, "Fused attention backward"},
-    {"zero_grad",           fastops_zero_grad,            METH_VARARGS, "Zero out 2D gradient"},
+    {"squared_relu_backward",fastops_squared_relu_backward,METH_VARARGS, "Squared ReLU backward"},
+    {"tensor_add",           fastops_tensor_add,           METH_VARARGS, "Element-wise add"},
+    {"tensor_add_backward",  fastops_tensor_add_backward,  METH_VARARGS, "Add backward"},
+    {"cross_entropy_forward", fastops_cross_entropy_forward,METH_VARARGS, "Cross-entropy forward"},
+    {"cross_entropy_backward",fastops_cross_entropy_backward,METH_VARARGS,"Cross-entropy backward"},
+    {"adam_update",          fastops_adam_update,           METH_VARARGS, "Adam update"},
+    {"attention_forward",    fastops_attention_forward,     METH_VARARGS, "Attention forward"},
+    {"attention_backward",   fastops_attention_backward,    METH_VARARGS, "Attention backward"},
+    {"zero_grad",            fastops_zero_grad,             METH_VARARGS, "Zero 2D gradient"},
     {NULL, NULL, 0, NULL}
 };
 
@@ -662,5 +623,13 @@ static struct PyModuleDef fastopsmodule = {
 };
 
 PyMODINIT_FUNC PyInit_fastops(void) {
-    return PyModule_Create(&fastopsmodule);
+    PyObject *mod = PyModule_Create(&fastopsmodule);
+    if (!mod) return NULL;
+    /* Cache array.array type for fast output array creation */
+    PyObject *arr_mod = PyImport_ImportModule("array");
+    if (arr_mod) {
+        array_cls = PyObject_GetAttrString(arr_mod, "array");
+        Py_DECREF(arr_mod);
+    }
+    return mod;
 }

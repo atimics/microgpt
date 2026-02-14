@@ -11,6 +11,8 @@ import math     # for math.log, math.exp
 import random   # for random.seed, random.choices
 import json     # for json.dump
 import argparse # for argparse.ArgumentParser
+import array as _array  # for contiguous double arrays
+_DA = _array.array      # shorthand for array.array constructor
 
 # Optional C accelerator for inner loops (falls back to pure Python)
 # Set MICROGPT_PURE_PYTHON=1 to force pure Python mode (useful for benchmarking)
@@ -58,14 +60,14 @@ class Tensor:
     __slots__ = ('data', 'grad', '_backward', '_prev')
 
     def __init__(self, data, _children=()):
-        self.data = data
+        self.data = data if isinstance(data, _array.array) else _DA('d', data)
         self.grad = None  # lazily allocated on first backward
         self._backward = lambda: None
         self._prev = _children
 
     def _ensure_grad(self):
         if self.grad is None:
-            self.grad = [0.0] * len(self.data)
+            self.grad = _DA('d', bytes(len(self.data) * 8))  # zero-initialized contiguous doubles
 
     def backward(self):
         # iterative topological sort (avoids recursion stack overflow on deep graphs)
@@ -99,10 +101,10 @@ class Param:
 
     def __init__(self, nout, nin, std=0.02):
         self.nout, self.nin = nout, nin
-        self.data = [[random.gauss(0, std) for _ in range(nin)] for _ in range(nout)]
-        self.grad = [[0.0] * nin for _ in range(nout)]
-        self.m = [[0.0] * nin for _ in range(nout)] # Adam first moment
-        self.v = [[0.0] * nin for _ in range(nout)] # Adam second moment
+        self.data = [_DA('d', [random.gauss(0, std) for _ in range(nin)]) for _ in range(nout)]
+        self.grad = [_DA('d', bytes(nin * 8)) for _ in range(nout)]
+        self.m = [_DA('d', bytes(nin * 8)) for _ in range(nout)]  # Adam first moment
+        self.v = [_DA('d', bytes(nin * 8)) for _ in range(nout)]  # Adam second moment
 
     def zero_grad(self):
         if HAS_C:
@@ -110,7 +112,7 @@ class Param:
         else:
             nin = self.nin
             for i in range(self.nout):
-                self.grad[i] = [0.0] * nin
+                self.grad[i] = _DA('d', bytes(nin * 8))
 
 # Model parameter initialization
 state_dict = {'wte': Param(vocab_size, n_embd), 'wpe': Param(block_size, n_embd), 'lm_head': Param(vocab_size, n_embd)}
@@ -128,7 +130,7 @@ print(f"num params: {num_params}")
 # Fused operations: each computes an entire vector operation as a single autograd node
 
 def embedding(param, idx):
-    out = Tensor(list(param.data[idx]))
+    out = Tensor(_DA('d', param.data[idx]))  # copy row
     def _backward():
         og = out.grad
         pg = param.grad[idx]
