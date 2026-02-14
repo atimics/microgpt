@@ -1,0 +1,61 @@
+{
+  "hyperparams": {
+    "n_embd": 256,
+    "n_layer": 2,
+    "n_head": 4,
+    "block_size": 16,
+    "num_steps": 3,
+    "learning_rate": 0.01
+  },
+  "num_params": 1590784,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "loss_history": [
+    3.356764126344457,
+    5.284077141967927,
+    3.541830570625607
+  ],
+  "loss_final": 3.541830570625607,
+  "loss_mean_last_50": 4.060890612979331,
+  "training_time_seconds": 30.6231,
+  "generated_samples": [
+    "xsongg",
+    "xavlnge",
+    "xabteg",
+    "ylonng",
+    "g",
+    "xxong",
+    "xaondre",
+    "xaondre",
+    "avfe",
+    "xxondre",
+    "iionng",
+    "axonng",
+    "xavien",
+    "xaonfre",
+    "jqonng",
+    "xaong",
+    "xrng",
+    "xcong",
+    "xlonng",
+    "tionnge"
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-14T22:46:27.558610+00:00",
+    "timestamp_local": "20260214_224627",
+    "machine": {
+      "machine_id": "0c27aefd7107",
+      "hostname": "codespaces-5dcacf",
+      "platform": "Linux-6.8.0-1030-azure-x86_64-with-glibc2.39",
+      "python": "3.12.1"
+    },
+    "git": {
+      "commit": "7342a710467194571b0b1843571bbdae33e8cdf4",
+      "commit_short": "7342a710",
+      "branch": "roofline-analysis",
+      "dirty": false
+    }
+  }
+}

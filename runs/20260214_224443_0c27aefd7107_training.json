@@ -1,0 +1,68 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 32,
+    "num_steps": 10,
+    "learning_rate": 0.01
+  },
+  "num_params": 4448,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "loss_history": [
+    3.283294706279928,
+    3.263375256493862,
+    3.2196608560796576,
+    3.2906648017459674,
+    3.2158117935984047,
+    3.0381628518517556,
+    3.2962128259829013,
+    3.241922331354733,
+    3.089343820614503,
+    3.182250856723506
+  ],
+  "loss_final": 3.182250856723506,
+  "loss_mean_last_50": 3.2120700100725217,
+  "training_time_seconds": 0.2797,
+  "generated_samples": [
+    "oabgrrurommlbo",
+    "vvqjengkss",
+    "vhknzoohzsnblm",
+    "ysc",
+    "pnqyfdbcj",
+    "mss",
+    "m",
+    "jkwsnzgohgnhxfmnxknhiwhmalhartvd",
+    "gxb",
+    "pjpcrclyjtftskfranmauvahmdvbqciv",
+    "g",
+    "ahp",
+    "zrqnleuijnjgaedugns",
+    "",
+    "bechxzjzfkoyjzkjondaojcdtq",
+    "dfcwfhriwyd",
+    "in",
+    "exwdvv",
+    "bi",
+    "naenjnrjqnhe"
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-14T22:44:43.711156+00:00",
+    "timestamp_local": "20260214_224443",
+    "machine": {
+      "machine_id": "0c27aefd7107",
+      "hostname": "codespaces-5dcacf",
+      "platform": "Linux-6.8.0-1030-azure-x86_64-with-glibc2.39",
+      "python": "3.12.1"
+    },
+    "git": {
+      "commit": "8c672600da2537288f0e581382c5f65d48282b03",
+      "commit_short": "8c672600",
+      "branch": "roofline-analysis",
+      "dirty": false
+    }
+  }
+}
