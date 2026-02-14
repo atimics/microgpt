@@ -134,73 +134,6 @@ static PyObject* fastops_vec_axpy(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
-/* ==== matvec: out = W @ x ==== */
-static PyObject* fastops_matvec(PyObject* self, PyObject* args) {
-    PyObject *W, *x_obj;
-    if (!PyArg_ParseTuple(args, "OO", &W, &x_obj)) return NULL;
-    Py_ssize_t nrow = PyList_GET_SIZE(W);
-    DArr x;
-    if (darr_get(&x, x_obj, 0) < 0) return NULL;
-    Py_ssize_t ncol = x.n;
-    double *out = (double *)malloc(nrow * sizeof(double));
-    if (!out) { darr_done(&x); return PyErr_NoMemory(); }
-
-    for (Py_ssize_t i = 0; i < nrow; i++) {
-        DArr wi;
-        if (darr_get(&wi, PyList_GET_ITEM(W, i), 0) < 0) {
-            darr_done(&x); free(out); return NULL;
-        }
-        double s = 0.0;
-        for (Py_ssize_t j = 0; j < ncol; j++) s += wi.ptr[j] * x.ptr[j];
-        out[i] = s;
-        darr_done(&wi);
-    }
-    darr_done(&x);
-    PyObject *result = darr_new(out, nrow);
-    free(out);
-    return result;
-}
-
-/* ==== linear_backward ==== */
-static PyObject* fastops_linear_backward(PyObject* self, PyObject* args) {
-    PyObject *og_obj, *wd, *wgrad, *xd_obj, *xg_obj;
-    if (!PyArg_ParseTuple(args, "OOOOO", &og_obj, &wd, &wgrad, &xd_obj, &xg_obj))
-        return NULL;
-
-    DArr og, xd, xg;
-    if (darr_get(&og, og_obj, 0) < 0) return NULL;
-    if (darr_get(&xd, xd_obj, 0) < 0) { darr_done(&og); return NULL; }
-    if (darr_get(&xg, xg_obj, 1) < 0) { darr_done(&og); darr_done(&xd); return NULL; }
-
-    Py_ssize_t n_out = og.n, n_in = xd.n;
-
-    for (Py_ssize_t i = 0; i < n_out; i++) {
-        double gi = og.ptr[i];
-        if (gi == 0.0) continue;
-        PyObject *wi_obj = PyList_GET_ITEM(wd, i);
-        PyObject *wgi_obj = PyList_GET_ITEM(wgrad, i);
-        DArr wi, wgi;
-        if (darr_get(&wi, wi_obj, 0) < 0) goto fail;
-        if (darr_get(&wgi, wgi_obj, 1) < 0) { darr_done(&wi); goto fail; }
-        for (Py_ssize_t j = 0; j < n_in; j++) {
-            wgi.ptr[j] += gi * xd.ptr[j];
-            xg.ptr[j] += gi * wi.ptr[j];
-        }
-        darr_sync(&wgi, wgi_obj);
-        darr_done(&wi);
-        darr_done(&wgi);
-    }
-
-    darr_sync(&xg, xg_obj);
-    darr_done(&og); darr_done(&xd); darr_done(&xg);
-    Py_RETURN_NONE;
-
-fail:
-    darr_sync(&xg, xg_obj);
-    darr_done(&og); darr_done(&xd); darr_done(&xg);
-    return NULL;
-}
-
 /* ==== rmsnorm forward ==== */
 static PyObject* fastops_rmsnorm_forward(PyObject* self, PyObject* args) {
     PyObject *xd_obj;
@@ -384,48 +317,6 @@ static PyObject* fastops_cross_entropy_backward(PyObject* self, PyObject* args) 
     Py_RETURN_NONE;
 }
 
-/* ==== Adam optimizer update (2D weight matrix) ==== */
-static PyObject* fastops_adam_update(PyObject* self, PyObject* args) {
-    PyObject *pdata, *pgrad, *pm, *pv;
-    double lr_t, beta1, beta2, bc1, bc2, eps;
-    if (!PyArg_ParseTuple(args, "OOOOdddddd",
-            &pdata, &pgrad, &pm, &pv,
-            &lr_t, &beta1, &beta2, &bc1, &bc2, &eps))
-        return NULL;
-
-    Py_ssize_t nout = PyList_GET_SIZE(pdata);
-    if (nout == 0) Py_RETURN_NONE;
-    double one_m_b1 = 1.0 - beta1;
-    double one_m_b2 = 1.0 - beta2;
-
-    for (Py_ssize_t i = 0; i < nout; i++) {
-        PyObject *pd_obj = PyList_GET_ITEM(pdata, i);
-        PyObject *pg_obj = PyList_GET_ITEM(pgrad, i);
-        PyObject *pm_obj = PyList_GET_ITEM(pm, i);
-        PyObject *pv_obj = PyList_GET_ITEM(pv, i);
-
-        DArr pd, pg, pmr, pvr;
-        if (darr_get(&pd, pd_obj, 1) < 0) return NULL;
-        if (darr_get(&pg, pg_obj, 0) < 0) { darr_done(&pd); return NULL; }
-        if (darr_get(&pmr, pm_obj, 1) < 0) { darr_done(&pd); darr_done(&pg); return NULL; }
-        if (darr_get(&pvr, pv_obj, 1) < 0) { darr_done(&pd); darr_done(&pg); darr_done(&pmr); return NULL; }
-
-        Py_ssize_t nin = pd.n;
-        for (Py_ssize_t j = 0; j < nin; j++) {
-            double g = pg.ptr[j];
-            pmr.ptr[j] = beta1 * pmr.ptr[j] + one_m_b1 * g;
-            pvr.ptr[j] = beta2 * pvr.ptr[j] + one_m_b2 * g * g;
-            pd.ptr[j] -= lr_t * (pmr.ptr[j] / bc1) / (sqrt(pvr.ptr[j] / bc2) + eps);
-        }
-
-        darr_sync(&pd, pd_obj);
-        darr_sync(&pmr, pm_obj);
-        darr_sync(&pvr, pv_obj);
-        darr_done(&pd); darr_done(&pg); darr_done(&pmr); darr_done(&pvr);
-    }
-    Py_RETURN_NONE;
-}
-
 /* ==== attention forward ==== */
 static PyObject* fastops_attention_forward(PyObject* self, PyObject* args) {
     PyObject *qd_obj, *keys_list, *vals_list;
@@ -580,23 +471,6 @@ static PyObject* fastops_attention_backward(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
-/* ==== zero_grad: zero all rows of a 2D gradient ==== */
-static PyObject* fastops_zero_grad(PyObject* self, PyObject* args) {
-    PyObject *grad;
-    if (!PyArg_ParseTuple(args, "O", &grad)) return NULL;
-
-    Py_ssize_t nout = PyList_GET_SIZE(grad);
-    for (Py_ssize_t i = 0; i < nout; i++) {
-        PyObject *row = PyList_GET_ITEM(grad, i);
-        DArr d;
-        if (darr_get(&d, row, 1) < 0) return NULL;
-        memset(d.ptr, 0, d.n * sizeof(double));
-        darr_sync(&d, row);
-        darr_done(&d);
-    }
-    Py_RETURN_NONE;
-}
-
 /* ==== embedding_flat: extract row idx from flat buffer ==== */
 static PyObject* fastops_embedding_flat(PyObject* self, PyObject* args) {
     PyObject *data_obj;
@@ -717,8 +591,6 @@ static PyObject* fastops_zero_grad_flat(PyObject* self, PyObject* args) {
 static PyMethodDef FastopsMethods[] = {
     {"vec_dot",              fastops_vec_dot,              METH_VARARGS, "Dot product"},
     {"vec_axpy",             fastops_vec_axpy,             METH_VARARGS, "y += alpha * x"},
-    {"matvec",               fastops_matvec,               METH_VARARGS, "W @ x"},
-    {"linear_backward",      fastops_linear_backward,      METH_VARARGS, "Linear backward"},
     {"rmsnorm_forward",      fastops_rmsnorm_forward,      METH_VARARGS, "RMSNorm forward"},
     {"rmsnorm_backward",     fastops_rmsnorm_backward,     METH_VARARGS, "RMSNorm backward"},
     {"squared_relu_forward", fastops_squared_relu_forward, METH_VARARGS, "Squared ReLU forward"},
@@ -727,10 +599,8 @@ static PyMethodDef FastopsMethods[] = {
     {"tensor_add_backward",  fastops_tensor_add_backward,  METH_VARARGS, "Add backward"},
     {"cross_entropy_forward", fastops_cross_entropy_forward,METH_VARARGS, "Cross-entropy forward"},
     {"cross_entropy_backward",fastops_cross_entropy_backward,METH_VARARGS,"Cross-entropy backward"},
-    {"adam_update",          fastops_adam_update,           METH_VARARGS, "Adam update"},
     {"attention_forward",    fastops_attention_forward,     METH_VARARGS, "Attention forward"},
     {"attention_backward",   fastops_attention_backward,    METH_VARARGS, "Attention backward"},
-    {"zero_grad",            fastops_zero_grad,             METH_VARARGS, "Zero 2D gradient"},
     {"embedding_flat",       fastops_embedding_flat,        METH_VARARGS, "Extract row from flat buffer"},
     {"matvec_flat",          fastops_matvec_flat,           METH_VARARGS, "Flat W @ x"},
     {"linear_backward_flat", fastops_linear_backward_flat,  METH_VARARGS, "Flat linear backward"},

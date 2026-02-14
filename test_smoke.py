@@ -41,20 +41,6 @@ def test_c_extension_ops():
     result = fastops.vec_dot([1.0, 2.0, 3.0], [4.0, 5.0, 6.0])
     assert abs(result - 32.0) < 1e-10, f"vec_dot: expected 32.0, got {result}"
 
-    # matvec (identity)
-    W = [[1.0, 0.0], [0.0, 1.0]]
-    x = [3.0, 4.0]
-    result = fastops.matvec(W, x)
-    assert abs(result[0] - 3.0) < 1e-10 and abs(result[1] - 4.0) < 1e-10, \
-        f"matvec identity: expected [3,4], got {result}"
-
-    # matvec (general)
-    W = [[1.0, 2.0], [3.0, 4.0]]
-    x = [1.0, 1.0]
-    result = fastops.matvec(W, x)
-    assert abs(result[0] - 3.0) < 1e-10 and abs(result[1] - 7.0) < 1e-10, \
-        f"matvec general: expected [3,7], got {result}"
-
     # vec_axpy
     y = [1.0, 2.0, 3.0]
     fastops.vec_axpy(2.0, [1.0, 1.0, 1.0], y)
