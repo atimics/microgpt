@@ -97,7 +97,7 @@ jobs:
 
       # --- Update baseline on main branch pushes ---
       - name: Update baseline
-        if: github.ref == 'refs/heads/claude/minimal-gpt-implementation-cpLV7' && github.event_name == 'push'
+        if: (github.ref == 'refs/heads/claude/minimal-gpt-implementation-cpLV7' || github.ref == 'refs/heads/main') && github.event_name == 'push'
         run: |
           # Skip if this push was a baseline update (avoid infinite loop)
           LAST_MSG=$(git log -1 --pretty=%s)
@@ -123,9 +123,9 @@ jobs:
         run: |
           python roofline.py --all-configs --json roofline_report.json 2>&1 | tee roofline_output.txt
 
-      - name: Generate Python vs C comparison
+      - name: Generate reference vs fast comparison
         run: |
-          python roofline.py --all-configs --compare-c --json roofline_compare.json 2>&1 | tee roofline_compare.txt
+          python roofline.py --all-configs --compare-ref --json roofline_compare.json 2>&1 | tee roofline_compare.txt
 
       - name: Post roofline summary
         if: always()

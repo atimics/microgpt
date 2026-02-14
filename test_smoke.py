@@ -30,6 +30,7 @@ def test_c_extension_builds():
 
 def test_c_extension_ops():
     """Verify C extension operations produce correct results."""
+    import array
     try:
         import fastops
     except ImportError:
@@ -60,11 +61,31 @@ def test_c_extension_ops():
     assert abs(y[0] - 3.0) < 1e-10 and abs(y[1] - 4.0) < 1e-10 and abs(y[2] - 5.0) < 1e-10, \
         f"vec_axpy: expected [3,4,5], got {y}"
 
+    # matvec_flat
+    W_flat = array.array('d', [1.0, 0.0, 0.0, 1.0])  # 2x2 identity
+    x = array.array('d', [3.0, 4.0])
+    result = fastops.matvec_flat(W_flat, x, 2, 2)
+    assert abs(result[0] - 3.0) < 1e-10 and abs(result[1] - 4.0) < 1e-10, \
+        f"matvec_flat identity: expected [3,4], got {list(result)}"
+
+    # matvec_flat (general)
+    W_flat = array.array('d', [1.0, 2.0, 3.0, 4.0])  # [[1,2],[3,4]]
+    x = array.array('d', [1.0, 1.0])
+    result = fastops.matvec_flat(W_flat, x, 2, 2)
+    assert abs(result[0] - 3.0) < 1e-10 and abs(result[1] - 7.0) < 1e-10, \
+        f"matvec_flat general: expected [3,7], got {list(result)}"
+
+    # embedding_flat
+    data = array.array('d', [10.0, 20.0, 30.0, 40.0, 50.0, 60.0])  # 3x2
+    row1 = fastops.embedding_flat(data, 1, 2)
+    assert abs(row1[0] - 30.0) < 1e-10 and abs(row1[1] - 40.0) < 1e-10, \
+        f"embedding_flat: expected [30,40], got {list(row1)}"
+
     print("  PASS: C extension ops correct")
 
 
 def test_training_basic():
-    """Train for 5 steps with C extension, verify loss is recorded."""
+    """Train for 5 steps with reference, verify loss is recorded."""
     rc, out, err = run([sys.executable, 'train.py', '--num-steps', '5'])
     assert rc == 0, f"train.py failed (rc={rc}):\n{err}\n{out}"
     assert 'training time:' in out, f"Missing 'training time:' in output:\n{out}"
@@ -79,31 +100,34 @@ def test_training_basic():
     print("  PASS: basic training (5 steps)")
 
 
-def test_training_pure_python():
-    """Train without C extension to verify pure Python fallback."""
-    env = os.environ.copy()
-    env['MICROGPT_PURE_PYTHON'] = '1'
-    rc, out, err = run([sys.executable, 'train.py', '--num-steps', '5'], env=env)
-    assert rc == 0, f"train.py (pure Python) failed (rc={rc}):\n{err}\n{out}"
+def test_training_fast():
+    """Train for 5 steps with fast path, verify loss is recorded."""
+    rc, out, err = run([sys.executable, 'train_fast.py', '--num-steps', '5'])
+    assert rc == 0, f"train_fast.py failed (rc={rc}):\n{err}\n{out}"
     assert 'training time:' in out, f"Missing 'training time:' in output:\n{out}"
-    print("  PASS: pure Python training (5 steps)")
+
+    with open('_last_run.json') as f:
+        metrics = json.load(f)
+    assert len(metrics['loss_history']) == 5, \
+        f"Expected 5 loss entries, got {len(metrics['loss_history'])}"
+    print("  PASS: fast training (5 steps)")
 
 
 def test_training_alternate_config():
     """Train with non-default hyperparameters."""
     rc, out, err = run([
-        sys.executable, 'train.py',
+        sys.executable, 'train_fast.py',
         '--num-steps', '3', '--n-embd', '32', '--n-layer', '2',
     ])
-    assert rc == 0, f"train.py (n_embd=32, n_layer=2) failed (rc={rc}):\n{err}\n{out}"
+    assert rc == 0, f"train_fast.py (n_embd=32, n_layer=2) failed (rc={rc}):\n{err}\n{out}"
     assert 'step    3' in out, f"Expected 3 steps in output:\n{out}"
     print("  PASS: alternate config training (n_embd=32, n_layer=2)")
 
 
 def test_training_loss_decreases():
     """Train for 50 steps and verify loss trend is downward."""
-    rc, out, err = run([sys.executable, 'train.py', '--num-steps', '50'])
-    assert rc == 0, f"train.py failed (rc={rc}):\n{err}"
+    rc, out, err = run([sys.executable, 'train_fast.py', '--num-steps', '50'])
+    assert rc == 0, f"train_fast.py failed (rc={rc}):\n{err}"
 
     with open('_last_run.json') as f:
         metrics = json.load(f)
@@ -115,6 +139,36 @@ def test_training_loss_decreases():
     assert last_5 < first_5, \
         f"Loss did not decrease: first_5={first_5:.4f}, last_5={last_5:.4f}"
     print(f"  PASS: loss decreased ({first_5:.4f} -> {last_5:.4f} over 50 steps)")
+
+
+def test_equivalence():
+    """Verify reference and fast path produce identical results."""
+    # Run reference
+    rc, out, err = run([sys.executable, 'train.py', '--num-steps', '20', '--seed', '42'])
+    assert rc == 0, f"train.py failed (rc={rc}):\n{err}"
+    with open('_last_run.json') as f:
+        ref_metrics = json.load(f)
+
+    # Run fast path
+    rc, out, err = run([sys.executable, 'train_fast.py', '--num-steps', '20', '--seed', '42'])
+    assert rc == 0, f"train_fast.py failed (rc={rc}):\n{err}"
+    with open('_last_run.json') as f:
+        fast_metrics = json.load(f)
+
+    # Compare loss histories
+    ref_loss = ref_metrics['loss_history']
+    fast_loss = fast_metrics['loss_history']
+    assert len(ref_loss) == len(fast_loss), \
+        f"Length mismatch: ref={len(ref_loss)}, fast={len(fast_loss)}"
+
+    max_diff = 0.0
+    for i, (r, f) in enumerate(zip(ref_loss, fast_loss)):
+        diff = abs(r - f)
+        max_diff = max(max_diff, diff)
+        assert diff < 1e-6, \
+            f"Loss diverged at step {i+1}: ref={r:.10f}, fast={f:.10f}, diff={diff:.2e}"
+
+    print(f"  PASS: equivalence verified (20 steps, max diff={max_diff:.2e})")
 
 
 def test_roofline_analytical():
@@ -166,10 +220,11 @@ def main():
     tests = [
         ('C extension build',     test_c_extension_builds),
         ('C extension ops',       test_c_extension_ops),
-        ('Basic training',        test_training_basic),
-        ('Pure Python training',  test_training_pure_python),
+        ('Reference training',    test_training_basic),
+        ('Fast training',         test_training_fast),
         ('Alternate config',      test_training_alternate_config),
         ('Loss decreases',        test_training_loss_decreases),
+        ('Ref/fast equivalence',  test_equivalence),
         ('Roofline analytical',   test_roofline_analytical),
         ('Roofline all-configs',  test_roofline_all_configs),
     ]

@@ -1,8 +1,7 @@
 """
-The most atomic way to train and inference a GPT LLM in pure, dependency-free Python.
-Differences from GPT-2 are minor: layer norm -> rmsnorm, no biases, GeLU -> square ReLU, no weight tying.
-The contents of this file is everything algorithmically needed to train a GPT. Everything else is just efficiency.
-Art project by @karpathy.
+Fast training path for microGPT. Uses contiguous flat memory + C extension for speed.
+Same algorithm as train.py (the pure-Python reference); use the equivalence test to verify.
+Requires the fastops C extension (python setup.py build_ext --inplace).
 """
 
 import os       # for os.path.exists
@@ -14,19 +13,7 @@ import argparse # for argparse.ArgumentParser
 import array as _array  # for contiguous double arrays
 _DA = _array.array      # shorthand for array.array constructor
 
-# Optional C extension for accelerated ops
-try:
-    import fastops as _C
-    HAS_C = True
-except ImportError:
-    _C = None
-    HAS_C = False
-
-# Optional run archiving (auto-save to runs/ with git/machine metadata)
-try:
-    from run_utils import archive_run as _archive_run
-except ImportError:
-    _archive_run = None
+import fastops as _C
 
 # CLI arguments
 parser = argparse.ArgumentParser()
@@ -37,7 +24,6 @@ parser.add_argument('--num-steps', type=int, default=500, help='Number of traini
 parser.add_argument('--n-head', type=int, default=4, help='Number of attention heads in the Transformer')
 parser.add_argument('--learning-rate', type=float, default=1e-2, help='Learning rate')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
-parser.add_argument('--no-archive', action='store_true', help='Skip auto-archive to runs/')
 args = parser.parse_args()
 n_embd, block_size, n_layer, n_head = args.n_embd, args.block_size, args.n_layer, args.n_head
 head_dim = n_embd // n_head
@@ -49,7 +35,6 @@ if not os.path.exists('input.txt'):
     urllib.request.urlretrieve('https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt', 'input.txt')
 docs = [l.strip() for l in open('input.txt').read().strip().split('\n') if l.strip()] # list[str] of documents
 random.shuffle(docs)
-docs_tokenized = None # pre-tokenized after stoi is built
 
 # Tokenizer: simple character-level tokenization with a BOS token delimiter
 chars = ['<BOS>'] + sorted(set(''.join(docs)))
@@ -76,7 +61,6 @@ class Tensor:
             self.grad = _DA('d', bytes(len(self.data) * 8))  # zero-initialized contiguous doubles
 
     def backward(self):
-        # iterative topological sort (avoids recursion stack overflow on deep graphs)
         topo = []
         visited = set()
         stack = [(self, False)]
@@ -94,122 +78,90 @@ class Tensor:
             for child in node._prev:
                 if id(child) not in visited:
                     stack.append((child, False))
-        # Allocate grads for all nodes in one pass
         for v in topo:
             v._ensure_grad()
         self.grad[0] = 1.0
         for v in reversed(topo):
             v._backward()
 
-class Param:
-    """ a 2D weight matrix with gradient and Adam optimizer state """
+class FlatParam:
+    """
+    2D weight matrix stored as a single contiguous array.array('d', nout * nin).
+    This eliminates per-row Python API calls in the C extension — one buffer access
+    instead of nout for matvec, linear_backward, adam_update, and zero_grad.
+    """
     __slots__ = ('data', 'grad', 'm', 'v', 'nout', 'nin')
 
     def __init__(self, nout, nin, std=0.02):
         self.nout, self.nin = nout, nin
-        self.data = [_DA('d', [random.gauss(0, std) for _ in range(nin)]) for _ in range(nout)]
-        self.grad = [_DA('d', bytes(nin * 8)) for _ in range(nout)]
-        self.m = [_DA('d', bytes(nin * 8)) for _ in range(nout)]  # Adam first moment
-        self.v = [_DA('d', bytes(nin * 8)) for _ in range(nout)]  # Adam second moment
+        self.data = _DA('d', [random.gauss(0, std) for _ in range(nout * nin)])
+        self.grad = _DA('d', bytes(nout * nin * 8))
+        self.m = _DA('d', bytes(nout * nin * 8))  # Adam first moment
+        self.v = _DA('d', bytes(nout * nin * 8))  # Adam second moment
 
     def zero_grad(self):
-        nin = self.nin
-        for i in range(self.nout):
-            self.grad[i] = _DA('d', bytes(nin * 8))
+        _C.zero_grad_flat(self.grad)
 
 # Model parameter initialization
-state_dict = {'wte': Param(vocab_size, n_embd), 'wpe': Param(block_size, n_embd), 'lm_head': Param(vocab_size, n_embd)}
+state_dict = {'wte': FlatParam(vocab_size, n_embd), 'wpe': FlatParam(block_size, n_embd), 'lm_head': FlatParam(vocab_size, n_embd)}
 for i in range(n_layer):
-    state_dict[f'layer{i}.attn_wq'] = Param(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wk'] = Param(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wv'] = Param(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wo'] = Param(n_embd, n_embd, std=0)
-    state_dict[f'layer{i}.mlp_fc1'] = Param(4 * n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc2'] = Param(n_embd, 4 * n_embd, std=0)
+    state_dict[f'layer{i}.attn_wq'] = FlatParam(n_embd, n_embd)
+    state_dict[f'layer{i}.attn_wk'] = FlatParam(n_embd, n_embd)
+    state_dict[f'layer{i}.attn_wv'] = FlatParam(n_embd, n_embd)
+    state_dict[f'layer{i}.attn_wo'] = FlatParam(n_embd, n_embd, std=0)
+    state_dict[f'layer{i}.mlp_fc1'] = FlatParam(4 * n_embd, n_embd)
+    state_dict[f'layer{i}.mlp_fc2'] = FlatParam(n_embd, 4 * n_embd, std=0)
 params = list(state_dict.values())
-num_params = sum(len(p.data) * len(p.data[0]) for p in params)
+num_params = sum(p.nout * p.nin for p in params)
 print(f"num params: {num_params}")
 
-# Fused operations: each computes an entire vector operation as a single autograd node
+# Fused operations using flat C functions
 
 def embedding(param, idx):
-    out = Tensor(_DA('d', param.data[idx]))  # copy row
+    out = Tensor(_C.embedding_flat(param.data, idx, param.nin))
     def _backward():
+        # Accumulate gradient into the correct row of the flat grad buffer
         og = out.grad
-        pg = param.grad[idx]
-        for j in range(len(og)):
-            pg[j] += og[j]
+        offset = idx * param.nin
+        pg = param.grad
+        for j in range(param.nin):
+            pg[offset + j] += og[j]
     out._backward = _backward
     return out
 
 def linear(x, w):
     n_out, n_in = w.nout, w.nin
-    xd = x.data
-    wd = w.data
-    out_data = [0.0] * n_out
-    n_in4 = n_in - (n_in % 4)
-    for i in range(n_out):
-        s = 0.0
-        wi = wd[i]
-        for j in range(0, n_in4, 4):
-            s += wi[j] * xd[j] + wi[j+1] * xd[j+1] + wi[j+2] * xd[j+2] + wi[j+3] * xd[j+3]
-        for j in range(n_in4, n_in):
-            s += wi[j] * xd[j]
-        out_data[i] = s
+    out_data = _C.matvec_flat(w.data, x.data, n_out, n_in)
     out = Tensor(out_data, (x,))
     def _backward():
-        xd = x.data
-        xg = x.grad
-        og = out.grad
-        n_in4 = n_in - (n_in % 4)
-        for i in range(n_out):
-            gi = og[i]
-            if gi == 0.0:
-                continue
-            wi = wd[i]
-            wgi = w.grad[i]
-            for j in range(0, n_in4, 4):
-                wgi[j] += gi * xd[j]; wgi[j+1] += gi * xd[j+1]; wgi[j+2] += gi * xd[j+2]; wgi[j+3] += gi * xd[j+3]
-                xg[j] += gi * wi[j]; xg[j+1] += gi * wi[j+1]; xg[j+2] += gi * wi[j+2]; xg[j+3] += gi * wi[j+3]
-            for j in range(n_in4, n_in):
-                wgi[j] += gi * xd[j]
-                xg[j] += gi * wi[j]
+        _C.linear_backward_flat(out.grad, w.data, w.grad, x.data, x.grad,
+                                n_out, n_in)
     out._backward = _backward
     return out
 
 def rmsnorm(x):
     xd = x.data
-    n = len(xd)
-    ms = sum(xi * xi for xi in xd) / n
-    scale = (ms + 1e-5) ** -0.5
-    out_data = [xi * scale for xi in xd]
+    out_data, scale = _C.rmsnorm_forward(xd)
     out = Tensor(out_data, (x,))
     def _backward():
-        dot = sum(out.grad[i] * xd[i] for i in range(n))
-        s3n = scale * scale * scale / n
-        for j in range(n):
-            x.grad[j] += out.grad[j] * scale - s3n * xd[j] * dot
+        _C.rmsnorm_backward(out.grad, xd, scale, x.grad)
     out._backward = _backward
     return out
 
 def tensor_add(a, b):
-    out_data = [ai + bi for ai, bi in zip(a.data, b.data)]
+    out_data = _C.tensor_add(a.data, b.data)
     out = Tensor(out_data, (a, b))
     def _backward():
-        for i in range(len(a.data)):
-            a.grad[i] += out.grad[i]
-            b.grad[i] += out.grad[i]
+        _C.tensor_add_backward(out.grad, a.grad, b.grad)
     out._backward = _backward
     return out
 
 def squared_relu(x):
     xd = x.data
-    out_data = [max(0.0, xi) ** 2 for xi in xd]
+    out_data = _C.squared_relu_forward(xd)
     out = Tensor(out_data, (x,))
     def _backward():
-        for i in range(len(xd)):
-            if xd[i] > 0.0:
-                x.grad[i] += 2.0 * xd[i] * out.grad[i]
+        _C.squared_relu_backward(xd, out.grad, x.grad)
     out._backward = _backward
     return out
 
@@ -218,74 +170,24 @@ def attention(q, keys, values, n_head, head_dim):
     children = (q,) + tuple(keys) + tuple(values)
     k_data = [k.data for k in keys]
     v_data = [v.data for v in values]
-    scale = head_dim ** 0.5
-    out_data = [0.0] * (n_head * head_dim)
-    all_attn_weights = []
-    for h in range(n_head):
-        hs = h * head_dim
-        qd = q.data
-        attn_logits = [0.0] * T
-        for t in range(T):
-            s = 0.0
-            kd = keys[t].data
-            for j in range(head_dim):
-                s += qd[hs + j] * kd[hs + j]
-            attn_logits[t] = s / scale
-        max_val = max(attn_logits) if T > 0 else 0.0
-        exps = [math.exp(a - max_val) for a in attn_logits]
-        total = sum(exps)
-        attn_w = [e / total for e in exps]
-        all_attn_weights.append(attn_w)
-        for j in range(head_dim):
-            s = 0.0
-            idx = hs + j
-            for t in range(T):
-                s += attn_w[t] * values[t].data[idx]
-            out_data[idx] = s
+    out_data, all_attn_weights = _C.attention_forward(q.data, k_data, v_data, n_head, head_dim)
     out = Tensor(out_data, children)
     qd = q.data
     def _backward():
-        og = out.grad
         qg = q.grad
         k_grad = [k.grad for k in keys]
         v_grad = [v.grad for v in values]
-        for h in range(n_head):
-            hs = h * head_dim
-            attn_w = all_attn_weights[h]
-            d_attn = [0.0] * T
-            for j in range(head_dim):
-                g = og[hs + j]
-                if g == 0.0:
-                    continue
-                idx = hs + j
-                for t in range(T):
-                    v_grad[t][idx] += g * attn_w[t]
-                    d_attn[t] += g * v_data[t][idx]
-            dot = sum(attn_w[t] * d_attn[t] for t in range(T))
-            for t in range(T):
-                dl = attn_w[t] * (d_attn[t] - dot) / scale
-                if dl == 0.0:
-                    continue
-                kd_t = k_data[t]
-                kg_t = k_grad[t]
-                for j in range(head_dim):
-                    idx = hs + j
-                    qg[idx] += dl * kd_t[idx]
-                    kg_t[idx] += dl * qd[idx]
+        _C.attention_backward(out.grad, qd, k_data, v_data,
+                              all_attn_weights, qg, k_grad, v_grad,
+                              n_head, head_dim)
     out._backward = _backward
     return out
 
 def cross_entropy(logits, target):
-    max_val = max(logits.data)
-    exps = [math.exp(v - max_val) for v in logits.data]
-    total = sum(exps)
-    probs = [e / total for e in exps]
-    loss = -math.log(probs[target])
+    loss, probs = _C.cross_entropy_forward(logits.data, target)
     out = Tensor([loss], (logits,))
     def _backward():
-        g = out.grad[0]
-        for i in range(len(logits.data)):
-            logits.grad[i] += g * (probs[i] - (1.0 if i == target else 0.0))
+        _C.cross_entropy_backward(out.grad[0], probs, target, logits.grad)
     out._backward = _backward
     return out
 
@@ -327,40 +229,33 @@ def gpt(token_id, pos_id, keys, values):
 # Model architecture (inference: plain floats, no autograd overhead)
 def gpt_inference(token_id, pos_id, keys, values):
     sd = state_dict
-    x = [t + p for t, p in zip(sd['wte'].data[token_id], sd['wpe'].data[pos_id])]
+    x = _C.tensor_add(
+        _C.embedding_flat(sd['wte'].data, token_id, n_embd),
+        _C.embedding_flat(sd['wpe'].data, pos_id, n_embd),
+    )
     def _rmsnorm(x):
-        ms = sum(xi * xi for xi in x) / len(x)
-        return [xi * (ms + 1e-5) ** -0.5 for xi in x]
-    _linear = lambda x, w: [sum(wi[j] * x[j] for j in range(len(x))) for wi in w.data]
-    _sqrelu = lambda x: [max(0.0, xi)**2 for xi in x]
+        out, _ = _C.rmsnorm_forward(x)
+        return out
+    _linear = lambda x, w: _C.matvec_flat(w.data, x, w.nout, w.nin)
+    _sqrelu = lambda x: _C.squared_relu_forward(x)
     x = _rmsnorm(x)
     for li in range(n_layer):
-        xr = list(x)
+        xr = _DA('d', x)
         x = _rmsnorm(x)
         q = _linear(x, sd[f'layer{li}.attn_wq'])
         k = _linear(x, sd[f'layer{li}.attn_wk'])
         v = _linear(x, sd[f'layer{li}.attn_wv'])
         keys[li].append(k)
         values[li].append(v)
-        x_attn = []
-        for h in range(n_head):
-            hs = h * head_dim
-            attn_logits = [sum(q[hs+j] * keys[li][t][hs+j] for j in range(head_dim)) / head_dim**0.5
-                           for t in range(len(keys[li]))]
-            mx = max(attn_logits)
-            exps = [math.exp(a - mx) for a in attn_logits]
-            total = sum(exps)
-            aw = [e / total for e in exps]
-            for j in range(head_dim):
-                x_attn.append(sum(aw[t] * values[li][t][hs+j] for t in range(len(values[li]))))
+        x_attn, _ = _C.attention_forward(q, keys[li], values[li], n_head, head_dim)
         x = _linear(x_attn, sd[f'layer{li}.attn_wo'])
-        x = [a + b for a, b in zip(x, xr)]
-        xr = list(x)
+        x = _C.tensor_add(x, xr)
+        xr = _DA('d', x)
         x = _rmsnorm(x)
         x = _linear(x, sd[f'layer{li}.mlp_fc1'])
         x = _sqrelu(x)
         x = _linear(x, sd[f'layer{li}.mlp_fc2'])
-        x = [a + b for a, b in zip(x, xr)]
+        x = _C.tensor_add(x, xr)
     return _linear(x, sd['lm_head'])
 
 # Adam optimizer
@@ -390,29 +285,21 @@ for step in range(args.num_steps):
     loss = mean_loss(losses)
     loss.backward()
 
-    # Adam update (optimizer)
+    # Adam update (flat — one C call per parameter, not per row)
     lr_t = learning_rate * (1 - step / args.num_steps)
     bc1 = 1.0 - beta1 ** (step + 1)
     bc2 = 1.0 - beta2 ** (step + 1)
-    one_m_b1 = 1.0 - beta1
-    one_m_b2 = 1.0 - beta2
     for p in params:
-        p_data, p_grad, p_m, p_v = p.data, p.grad, p.m, p.v
-        for i in range(p.nout):
-            pd, pg, pm, pv = p_data[i], p_grad[i], p_m[i], p_v[i]
-            for j in range(p.nin):
-                g = pg[j]
-                pm[j] = beta1 * pm[j] + one_m_b1 * g
-                pv[j] = beta2 * pv[j] + one_m_b2 * g * g
-                pd[j] -= lr_t * (pm[j] / bc1) / ((pv[j] / bc2) ** 0.5 + eps_adam)
+        _C.adam_update_flat(p.data, p.grad, p.m, p.v,
+                            lr_t, beta1, beta2, bc1, bc2, eps_adam)
 
     lossf_history.append(loss.data[0])
     print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}")
-print(f"mean loss last 50 steps: {sum(lossf_history[-50:]) / len(lossf_history[-50:]):.4f}") # ~usable for basic kwarg tuning
-print(f"training time: {time.perf_counter() - t_start:.2f}s") # ~usable for basic performance benchmarking
+print(f"mean loss last 50 steps: {sum(lossf_history[-50:]) / len(lossf_history[-50:]):.4f}")
+print(f"training time: {time.perf_counter() - t_start:.2f}s")
 
 # Inference: generate 20 samples (no autograd)
-temperature = 0.5 # number in (0, 1] that controls the "creativity" of generated text, low to high
+temperature = 0.5
 generated_samples = []
 print("\n--- inference ---")
 for sample_idx in range(20):
@@ -451,12 +338,6 @@ run_metrics = {
     'loss_mean_last_50': mean_loss_last_50,
     'training_time_seconds': round(training_time, 4),
     'generated_samples': generated_samples,
-    'has_c_ext': HAS_C,
 }
 with open('_last_run.json', 'w') as f:
     json.dump(run_metrics, f, indent=2)
-
-# Auto-archive to runs/ with git commit and machine metadata
-if _archive_run and not args.no_archive:
-    dest = _archive_run(run_metrics, 'training')
-    print(f"run archived: {dest}")

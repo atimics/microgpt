@@ -289,13 +289,14 @@ def count_bytes(n_embd, n_layer, n_head, block_size, vocab_size, seq_len=None, m
 # ---------------------------------------------------------------------------
 
 def measure_step_time(n_embd, n_layer, n_head, block_size, num_steps=20,
-                      pure_python=False):
-    """Run train.py for a few steps and return time per step."""
+                      pure_python=False, script='train_fast.py'):
+    """Run training script for a few steps and return time per step."""
     env = os.environ.copy()
     if pure_python:
         env['MICROGPT_PURE_PYTHON'] = '1'
+        script = 'train.py'
     cmd = [
-        sys.executable, 'train.py',
+        sys.executable, script,
         '--n-embd', str(n_embd),
         '--n-layer', str(n_layer),
         '--n-head', str(n_head),
@@ -577,8 +578,8 @@ def main():
     parser.add_argument('--vocab-size', type=int, default=27)
     parser.add_argument('--all-configs', action='store_true',
                         help='Analyze all 6 standard benchmark configs')
-    parser.add_argument('--compare-c', action='store_true',
-                        help='Compare pure Python vs C extension performance')
+    parser.add_argument('--compare-ref', action='store_true',
+                        help='Compare reference (pure Python) vs fast path performance')
     parser.add_argument('--no-measure', action='store_true',
                         help='Analytical only (skip running train.py)')
     parser.add_argument('--json', type=str, default=None,
@@ -681,39 +682,35 @@ def main():
             print(f"  {label:<20} {r['num_params']:>8,} {fmt_flops(r['total_flops']):>12} "
                   f"{r['oi_python']:>7.4f} {ms:>8} {gf:>8} {eff:>6}% {bnd:>7}")
 
-    # --- Python vs C extension comparison ---
-    if args.compare_c and not args.no_measure:
+    # --- Reference vs Fast comparison ---
+    if args.compare_ref and not args.no_measure:
         print(f"\n{'='*72}")
-        print(f"  Python vs C Extension Comparison")
+        print(f"  Reference (pure Python) vs Fast Path Comparison")
         print(f"{'='*72}")
-        if not has_c:
-            print("\n  C extension (fastops) not available — nothing to compare.")
-            print("  Build it with: python setup.py build_ext --inplace")
-        else:
-            compare_results = []
-            for n_embd, n_layer, n_head, block_size in configs:
-                c_label = f"e{n_embd}_L{n_layer}_b{block_size}"
-                print(f"\n  Measuring {c_label} (pure Python)...", end='', flush=True)
-                t_py = measure_step_time(n_embd, n_layer, n_head, block_size, 20,
-                                         pure_python=True)
-                if t_py:
-                    print(f" {t_py*1000:.1f} ms/step")
-                else:
-                    print(f" failed")
-                compare_results.append((c_label, t_py))
+        compare_results = []
+        for n_embd, n_layer, n_head, block_size in configs:
+            c_label = f"e{n_embd}_L{n_layer}_b{block_size}"
+            print(f"\n  Measuring {c_label} (reference)...", end='', flush=True)
+            t_ref = measure_step_time(n_embd, n_layer, n_head, block_size, 20,
+                                      script='train.py')
+            if t_ref:
+                print(f" {t_ref*1000:.1f} ms/step")
+            else:
+                print(f" failed")
+            compare_results.append((c_label, t_ref))
 
-            print(f"\n  {'Config':<20} {'Pure Python':>14} {'With C ext':>14} {'Speedup':>10}")
-            print(f"  {'-'*60}")
-            for i, (label, t_py) in enumerate(compare_results):
-                ms_c = all_results[i].get('step_time_ms')
-                ms_py = t_py * 1000 if t_py else None
-                ms_c_str  = f"{ms_c:.1f} ms" if ms_c else "-"
-                ms_py_str = f"{ms_py:.1f} ms" if ms_py else "-"
-                if ms_c and ms_py:
-                    speedup = f"{ms_py / ms_c:.2f}x"
-                else:
-                    speedup = "-"
-                print(f"  {label:<20} {ms_py_str:>14} {ms_c_str:>14} {speedup:>10}")
+        print(f"\n  {'Config':<20} {'Reference':>14} {'Fast path':>14} {'Speedup':>10}")
+        print(f"  {'-'*60}")
+        for i, (label, t_ref) in enumerate(compare_results):
+            ms_fast = all_results[i].get('step_time_ms')
+            ms_ref = t_ref * 1000 if t_ref else None
+            ms_fast_str = f"{ms_fast:.1f} ms" if ms_fast else "-"
+            ms_ref_str  = f"{ms_ref:.1f} ms" if ms_ref else "-"
+            if ms_fast and ms_ref:
+                speedup = f"{ms_ref / ms_fast:.1f}x"
+            else:
+                speedup = "-"
+            print(f"  {label:<20} {ms_ref_str:>14} {ms_fast_str:>14} {speedup:>10}")
 
     # --- Key insights ---
     print(f"\n{'='*72}")

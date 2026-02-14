@@ -13,40 +13,17 @@ import os
 import sys
 import json
 import time
-import hashlib
 import platform
-import socket
 import subprocess
 import argparse
 from datetime import datetime, timezone
 
-
-def get_machine_id():
-    """Stable machine identifier: /etc/machine-id (Linux) with hostname fallback."""
-    machine_id_path = '/etc/machine-id'
-    if os.path.exists(machine_id_path):
-        with open(machine_id_path) as f:
-            raw = f.read().strip()
-        return hashlib.sha256(raw.encode()).hexdigest()[:12]
-    # fallback: hash hostname + platform
-    raw = f"{socket.gethostname()}-{platform.machine()}-{platform.system()}"
-    return hashlib.sha256(raw.encode()).hexdigest()[:12]
-
-
-def get_machine_meta():
-    """Collect machine metadata for the run record."""
-    return {
-        'machine_id': get_machine_id(),
-        'hostname': socket.gethostname(),
-        'platform': platform.platform(),
-        'python_version': platform.python_version(),
-        'arch': platform.machine(),
-    }
+from run_utils import archive_run, load_runs, get_machine_id
 
 
 def run_training(train_args):
     """Run train.py as a subprocess, streaming output live."""
-    cmd = [sys.executable, 'train.py'] + train_args
+    cmd = [sys.executable, 'train.py', '--no-archive'] + train_args
     print(f">>> {' '.join(cmd)}\n")
     result = subprocess.run(cmd, cwd=os.path.dirname(os.path.abspath(__file__)) or '.')
     if result.returncode != 0:
@@ -54,8 +31,12 @@ def run_training(train_args):
         sys.exit(result.returncode)
 
 
-def archive_run(tag=None):
-    """Read _last_run.json, enrich with machine metadata, archive to runs/."""
+def archive_harness_run(tag=None):
+    """Read _last_run.json, enrich and archive via run_utils.
+
+    If train.py already auto-archived (it writes _meta), we only
+    re-archive when a tag is provided that train.py didn't have.
+    """
     metrics_path = '_last_run.json'
     if not os.path.exists(metrics_path):
         print("ERROR: _last_run.json not found. Did train.py complete successfully?")
@@ -64,47 +45,21 @@ def archive_run(tag=None):
     with open(metrics_path) as f:
         metrics = json.load(f)
 
-    # enrich with machine and run metadata
-    now = datetime.now(timezone.utc)
-    metrics['machine'] = get_machine_meta()
-    metrics['timestamp'] = now.isoformat()
-    if tag:
-        metrics['tag'] = tag
+    # train.py already auto-archives; only re-archive if harness adds a tag
+    already_archived = '_meta' in metrics
+    if not already_archived or tag:
+        filepath = archive_run(metrics, 'training', tag=tag)
+        print(f"\nRun archived: {filepath}")
+    else:
+        filepath = None
 
-    # save to runs/
-    runs_dir = 'runs'
-    os.makedirs(runs_dir, exist_ok=True)
-    machine_id = metrics['machine']['machine_id']
-    filename = f"{now.strftime('%Y%m%d_%H%M%S')}_{machine_id}.json"
-    filepath = os.path.join(runs_dir, filename)
-    with open(filepath, 'w') as f:
-        json.dump(metrics, f, indent=2)
-
-    # clean up temp file
     os.remove(metrics_path)
-
-    print(f"\nRun archived: {filepath}")
     return filepath, metrics
 
 
-def load_all_runs():
-    """Load all archived runs from runs/ directory."""
-    runs_dir = 'runs'
-    if not os.path.exists(runs_dir):
-        return []
-    runs = []
-    for fname in sorted(os.listdir(runs_dir)):
-        if fname.endswith('.json'):
-            with open(os.path.join(runs_dir, fname)) as f:
-                run = json.load(f)
-            run['_filename'] = fname
-            runs.append(run)
-    return runs
-
-
-def print_comparison(runs):
+def print_comparison(runs_tuples):
     """Print a formatted comparison table of all runs."""
-    if not runs:
+    if not runs_tuples:
         print("No runs found in runs/ directory.")
         return
 
@@ -112,49 +67,50 @@ def print_comparison(runs):
     cols = [
         ('Run', 20),
         ('Machine', 14),
+        ('Commit', 10),
         ('Tag', 12),
         ('Steps', 7),
         ('n_embd', 7),
         ('n_layer', 8),
-        ('n_head', 7),
-        ('LR', 10),
         ('Loss(fin)', 10),
-        ('Loss(m50)', 10),
         ('Time(s)', 9),
     ]
     header = '  '.join(name.ljust(width) for name, width in cols)
     print(header)
     print('-' * len(header))
 
-    for run in runs:
+    for fname, run in runs_tuples:
         hp = run.get('hyperparams', {})
-        machine = run.get('machine', {})
+        meta = run.get('_meta', {})
+        machine = meta.get('machine', run.get('machine', {}))
+        git = meta.get('git', {})
         row = [
-            run.get('_filename', '?')[:20].replace('.json', ''),
+            fname[:20].replace('.json', ''),
             machine.get('machine_id', '?'),
-            run.get('tag', '-')[:12],
+            git.get('commit_short', '?'),
+            meta.get('tag', run.get('tag', '-'))[:12] if meta.get('tag') or run.get('tag') else '-',
             str(hp.get('num_steps', '?')),
             str(hp.get('n_embd', '?')),
             str(hp.get('n_layer', '?')),
-            str(hp.get('n_head', '?')),
-            f"{hp.get('learning_rate', 0):.0e}",
             f"{run.get('loss_final', 0):.4f}",
-            f"{run.get('loss_mean_last_50', 0):.4f}",
             f"{run.get('training_time_seconds', 0):.1f}",
         ]
         line = '  '.join(val.ljust(width) for val, (_, width) in zip(row, cols))
         print(line)
 
-    print(f"\n{len(runs)} run(s) total.")
+    print(f"\n{len(runs_tuples)} run(s) total.")
 
 
 def print_summary(metrics):
     """Print a quick summary of the just-completed run."""
     hp = metrics['hyperparams']
-    machine = metrics['machine']
+    meta = metrics.get('_meta', {})
+    machine = meta.get('machine', metrics.get('machine', {}))
+    git = meta.get('git', {})
     print(f"\n{'='*50}")
-    print(f"  Machine:    {machine['machine_id']} ({machine['hostname']})")
-    print(f"  Tag:        {metrics.get('tag', '-')}")
+    print(f"  Machine:    {machine.get('machine_id', '?')} ({machine.get('hostname', '?')})")
+    print(f"  Commit:     {git.get('commit_short', '?')} ({git.get('branch', '?')})")
+    print(f"  Tag:        {meta.get('tag', metrics.get('tag', '-'))}")
     print(f"  Config:     embd={hp['n_embd']} layers={hp['n_layer']} heads={hp['n_head']} blk={hp['block_size']}")
     print(f"  Steps:      {hp['num_steps']}")
     print(f"  Params:     {metrics['num_params']}")
@@ -174,7 +130,7 @@ def main():
     known, train_args = parser.parse_known_args()
 
     if known.compare:
-        runs = load_all_runs()
+        runs = load_runs(run_type='training')
         print_comparison(runs)
         return
 
@@ -183,7 +139,7 @@ def main():
         train_args.extend(['--num-steps', '20'])
 
     run_training(train_args)
-    filepath, metrics = archive_run(tag=known.tag)
+    filepath, metrics = archive_harness_run(tag=known.tag)
     print_summary(metrics)
 
 

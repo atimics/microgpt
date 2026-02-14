@@ -8,3 +8,4 @@ roofline_compare.txt
 build/*
 *.so
 *.egg-info/
+__pycache__/
