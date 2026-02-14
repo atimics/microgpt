@@ -18,6 +18,8 @@ import sys
 import subprocess
 import os
 import argparse
+import socket
+import datetime
 
 # Changes below this threshold are reported as noise (CI runners vary)
 NOISE_THRESHOLD_PCT = 5.0
@@ -217,10 +219,31 @@ def format_markdown(rows, base_data, curr_data):
     return '\n'.join(lines)
 
 
+def save_to_runs(result_path):
+    """Copy benchmark result into the runs/ directory with a timestamp."""
+    runs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'runs')
+    os.makedirs(runs_dir, exist_ok=True)
+    ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    hostname = socket.gethostname()
+    dest = os.path.join(runs_dir, f'{ts}_{hostname}_bench.json')
+    with open(result_path) as f:
+        data = json.load(f)
+    data['_meta'] = {
+        'timestamp': ts,
+        'hostname': hostname,
+        'type': 'benchmark',
+    }
+    with open(dest, 'w') as f:
+        json.dump(data, f, indent=2)
+    return dest
+
+
 def cmd_run(args):
     """Run benchmark and save results."""
     run_benchmark(args.output)
+    dest = save_to_runs(args.output)
     print(f"\nResults saved to {args.output}")
+    print(f"Archived to {dest}")
 
 
 def cmd_compare(args):

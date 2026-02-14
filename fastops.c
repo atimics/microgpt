@@ -597,6 +597,122 @@ static PyObject* fastops_zero_grad(PyObject* self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
+/* ==== embedding_flat: extract row idx from flat buffer ==== */
+static PyObject* fastops_embedding_flat(PyObject* self, PyObject* args) {
+    PyObject *data_obj;
+    Py_ssize_t idx, dim;
+    if (!PyArg_ParseTuple(args, "Onn", &data_obj, &idx, &dim)) return NULL;
+    DArr d;
+    if (darr_get(&d, data_obj, 0) < 0) return NULL;
+    PyObject *result = darr_new(d.ptr + idx * dim, dim);
+    darr_done(&d);
+    return result;
+}
+
+/* ==== matvec_flat: out = W @ x, W is flat (nout*nin) ==== */
+static PyObject* fastops_matvec_flat(PyObject* self, PyObject* args) {
+    PyObject *W_obj, *x_obj;
+    int nout, nin;
+    if (!PyArg_ParseTuple(args, "OOii", &W_obj, &x_obj, &nout, &nin)) return NULL;
+
+    DArr W, x;
+    if (darr_get(&W, W_obj, 0) < 0) return NULL;
+    if (darr_get(&x, x_obj, 0) < 0) { darr_done(&W); return NULL; }
+
+    double *out = (double *)malloc(nout * sizeof(double));
+    if (!out) { darr_done(&W); darr_done(&x); return PyErr_NoMemory(); }
+
+    for (int i = 0; i < nout; i++) {
+        double s = 0.0;
+        const double *wi = W.ptr + i * nin;
+        for (int j = 0; j < nin; j++)
+            s += wi[j] * x.ptr[j];
+        out[i] = s;
+    }
+
+    darr_done(&W); darr_done(&x);
+    PyObject *result = darr_new(out, nout);
+    free(out);
+    return result;
+}
+
+/* ==== linear_backward_flat: W and Wgrad are flat (nout*nin) ==== */
+static PyObject* fastops_linear_backward_flat(PyObject* self, PyObject* args) {
+    PyObject *og_obj, *W_obj, *Wgrad_obj, *xd_obj, *xg_obj;
+    int nout, nin;
+    if (!PyArg_ParseTuple(args, "OOOOOii", &og_obj, &W_obj, &Wgrad_obj,
+                          &xd_obj, &xg_obj, &nout, &nin))
+        return NULL;
+
+    DArr og, W, Wg, xd, xg;
+    if (darr_get(&og, og_obj, 0) < 0) return NULL;
+    if (darr_get(&W, W_obj, 0) < 0) { darr_done(&og); return NULL; }
+    if (darr_get(&Wg, Wgrad_obj, 1) < 0) { darr_done(&og); darr_done(&W); return NULL; }
+    if (darr_get(&xd, xd_obj, 0) < 0) { darr_done(&og); darr_done(&W); darr_done(&Wg); return NULL; }
+    if (darr_get(&xg, xg_obj, 1) < 0) { darr_done(&og); darr_done(&W); darr_done(&Wg); darr_done(&xd); return NULL; }
+
+    for (int i = 0; i < nout; i++) {
+        double gi = og.ptr[i];
+        if (gi == 0.0) continue;
+        const double *wi = W.ptr + i * nin;
+        double *wgi = Wg.ptr + i * nin;
+        for (int j = 0; j < nin; j++) {
+            wgi[j] += gi * xd.ptr[j];
+            xg.ptr[j] += gi * wi[j];
+        }
+    }
+
+    darr_sync(&Wg, Wgrad_obj);
+    darr_sync(&xg, xg_obj);
+    darr_done(&og); darr_done(&W); darr_done(&Wg); darr_done(&xd); darr_done(&xg);
+    Py_RETURN_NONE;
+}
+
+/* ==== adam_update_flat: all buffers are flat 1D arrays ==== */
+static PyObject* fastops_adam_update_flat(PyObject* self, PyObject* args) {
+    PyObject *pdata_obj, *pgrad_obj, *pm_obj, *pv_obj;
+    double lr_t, beta1, beta2, bc1, bc2, eps;
+    if (!PyArg_ParseTuple(args, "OOOOdddddd",
+            &pdata_obj, &pgrad_obj, &pm_obj, &pv_obj,
+            &lr_t, &beta1, &beta2, &bc1, &bc2, &eps))
+        return NULL;
+
+    DArr pd, pg, pmr, pvr;
+    if (darr_get(&pd, pdata_obj, 1) < 0) return NULL;
+    if (darr_get(&pg, pgrad_obj, 0) < 0) { darr_done(&pd); return NULL; }
+    if (darr_get(&pmr, pm_obj, 1) < 0) { darr_done(&pd); darr_done(&pg); return NULL; }
+    if (darr_get(&pvr, pv_obj, 1) < 0) { darr_done(&pd); darr_done(&pg); darr_done(&pmr); return NULL; }
+
+    double one_m_b1 = 1.0 - beta1;
+    double one_m_b2 = 1.0 - beta2;
+    Py_ssize_t n = pd.n;
+
+    for (Py_ssize_t j = 0; j < n; j++) {
+        double g = pg.ptr[j];
+        pmr.ptr[j] = beta1 * pmr.ptr[j] + one_m_b1 * g;
+        pvr.ptr[j] = beta2 * pvr.ptr[j] + one_m_b2 * g * g;
+        pd.ptr[j] -= lr_t * (pmr.ptr[j] / bc1) / (sqrt(pvr.ptr[j] / bc2) + eps);
+    }
+
+    darr_sync(&pd, pdata_obj);
+    darr_sync(&pmr, pm_obj);
+    darr_sync(&pvr, pv_obj);
+    darr_done(&pd); darr_done(&pg); darr_done(&pmr); darr_done(&pvr);
+    Py_RETURN_NONE;
+}
+
+/* ==== zero_grad_flat: zero a flat 1D gradient array ==== */
+static PyObject* fastops_zero_grad_flat(PyObject* self, PyObject* args) {
+    PyObject *grad_obj;
+    if (!PyArg_ParseTuple(args, "O", &grad_obj)) return NULL;
+    DArr d;
+    if (darr_get(&d, grad_obj, 1) < 0) return NULL;
+    memset(d.ptr, 0, d.n * sizeof(double));
+    darr_sync(&d, grad_obj);
+    darr_done(&d);
+    Py_RETURN_NONE;
+}
+
 /* ==== method table ==== */
 static PyMethodDef FastopsMethods[] = {
     {"vec_dot",              fastops_vec_dot,              METH_VARARGS, "Dot product"},
@@ -615,6 +731,11 @@ static PyMethodDef FastopsMethods[] = {
     {"attention_forward",    fastops_attention_forward,     METH_VARARGS, "Attention forward"},
     {"attention_backward",   fastops_attention_backward,    METH_VARARGS, "Attention backward"},
     {"zero_grad",            fastops_zero_grad,             METH_VARARGS, "Zero 2D gradient"},
+    {"embedding_flat",       fastops_embedding_flat,        METH_VARARGS, "Extract row from flat buffer"},
+    {"matvec_flat",          fastops_matvec_flat,           METH_VARARGS, "Flat W @ x"},
+    {"linear_backward_flat", fastops_linear_backward_flat,  METH_VARARGS, "Flat linear backward"},
+    {"adam_update_flat",     fastops_adam_update_flat,       METH_VARARGS, "Flat Adam update"},
+    {"zero_grad_flat",       fastops_zero_grad_flat,        METH_VARARGS, "Zero flat gradient"},
     {NULL, NULL, 0, NULL}
 };
 
