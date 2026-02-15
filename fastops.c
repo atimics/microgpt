@@ -478,6 +478,11 @@ static PyObject* fastops_embedding_flat(PyObject* self, PyObject* args) {
     if (!PyArg_ParseTuple(args, "Onn", &data_obj, &idx, &dim)) return NULL;
     DArr d;
     if (darr_get(&d, data_obj, 0) < 0) return NULL;
+    if (idx < 0 || (idx + 1) * dim > d.n) {
+        darr_done(&d);
+        PyErr_Format(PyExc_IndexError, "embedding index %zd out of range for buffer of %zd elements with dim %zd", idx, d.n, dim);
+        return NULL;
+    }
     PyObject *result = darr_new(d.ptr + idx * dim, dim);
     darr_done(&d);
     return result;
