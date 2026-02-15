@@ -195,6 +195,31 @@ def test_roofline_all_configs():
     print("  PASS: roofline all-configs analytical")
 
 
+def test_validation_n_embd_divisibility():
+    """Verify n_embd divisibility validation rejects invalid configs."""
+    # Test train.py with invalid config (16 % 5 != 0)
+    rc, out, err = run([sys.executable, 'train.py', '--n-embd', '16', '--n-head', '5', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with n_embd=16, n_head=5"
+    assert 'n_embd (16) must be divisible by n_head (5)' in err, \
+        f"Expected validation error message in stderr, got:\n{err}"
+    
+    # Test train_fast.py with invalid config (16 % 5 != 0)
+    rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '16', '--n-head', '5', '--num-steps', '1'])
+    assert rc != 0, "train_fast.py should fail with n_embd=16, n_head=5"
+    assert 'n_embd (16) must be divisible by n_head (5)' in err, \
+        f"Expected validation error message in stderr, got:\n{err}"
+    
+    # Test train.py with valid config (16 % 4 == 0)
+    rc, out, err = run([sys.executable, 'train.py', '--n-embd', '16', '--n-head', '4', '--num-steps', '1'])
+    assert rc == 0, f"train.py should succeed with n_embd=16, n_head=4:\n{err}"
+    
+    # Test train_fast.py with valid config (32 % 8 == 0)
+    rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '32', '--n-head', '8', '--num-steps', '1'])
+    assert rc == 0, f"train_fast.py should succeed with n_embd=32, n_head=8:\n{err}"
+    
+    print("  PASS: n_embd divisibility validation")
+
+
 def main():
     parser = argparse.ArgumentParser(description='microgpt smoke tests')
     parser.add_argument('--quick', action='store_true',
@@ -206,6 +231,7 @@ def main():
     tests = [
         ('C extension build',     test_c_extension_builds),
         ('C extension ops',       test_c_extension_ops),
+        ('Parameter validation',  test_validation_n_embd_divisibility),
         ('Reference training',    test_training_basic),
         ('Fast training',         test_training_fast),
         ('Alternate config',      test_training_alternate_config),
