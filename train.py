@@ -818,6 +818,8 @@ run_metrics = {
         'n_embd': n_embd, 'n_layer': n_layer, 'n_head': n_head,
         'block_size': block_size, 'num_steps': args.num_steps,
         'learning_rate': args.learning_rate,
+        'temperature': args.temperature,
+        'num_samples': args.num_samples,
         'val_split': args.val_split,
         'val_every': args.val_every,
         'early_stop_patience': args.early_stop_patience,

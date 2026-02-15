@@ -247,6 +247,7 @@ def test_roofline_all_configs():
     print("  PASS: roofline all-configs analytical")
 
 
+<<<<<<< HEAD
 def test_validation_n_embd_divisibility():
     """Verify n_embd divisibility validation rejects invalid configs."""
     rc, out, err = run([sys.executable, 'train.py', '--n-embd', '16', '--n-head', '5', '--num-steps', '1'])
@@ -438,6 +439,38 @@ def test_validation_fast_path():
     print("  PASS: validation works in train_fast.py")
 
 
+def test_inference_cli_flags_reference():
+    """Test inference CLI flags (--temperature, --num-samples) on reference path."""
+    rc, out, err = run([
+        sys.executable, 'train.py',
+        '--num-steps', '3', '--temperature', '0.7', '--num-samples', '7'
+    ])
+    assert rc == 0, f"train.py with inference flags failed (rc={rc}):\n{err}\n{out}"
+    with open('_last_run.json') as f:
+        metrics = json.load(f)
+    assert 'temperature' in metrics['hyperparams'], "temperature not in hyperparams"
+    assert metrics['hyperparams']['temperature'] == 0.7
+    assert metrics['hyperparams']['num_samples'] == 7
+    assert len(metrics['generated_samples']) == 7
+    print("  PASS: inference CLI flags (reference path)")
+
+
+def test_inference_cli_flags_fast():
+    """Test inference CLI flags (--temperature, --num-samples) on fast path."""
+    rc, out, err = run([
+        sys.executable, 'train_fast.py',
+        '--num-steps', '3', '--temperature', '0.3', '--num-samples', '5'
+    ])
+    assert rc == 0, f"train_fast.py with inference flags failed (rc={rc}):\n{err}\n{out}"
+    with open('_last_run.json') as f:
+        metrics = json.load(f)
+    assert 'temperature' in metrics['hyperparams'], "temperature not in hyperparams"
+    assert metrics['hyperparams']['temperature'] == 0.3
+    assert metrics['hyperparams']['num_samples'] == 5
+    assert len(metrics['generated_samples']) == 5
+    print("  PASS: inference CLI flags (fast path)")
+
+
 def main():
     parser = argparse.ArgumentParser(description='microgpt smoke tests')
     parser.add_argument('--quick', action='store_true',
@@ -471,6 +504,8 @@ def main():
         ('Validation: zero learning_rate', test_validation_zero_learning_rate),
         ('Validation: n_embd divisibility', test_validation_n_embd_not_divisible),
         ('Validation: fast path', test_validation_fast_path),
+        ('Inference flags (ref)', test_inference_cli_flags_reference),
+        ('Inference flags (fast)', test_inference_cli_flags_fast),
         ('Roofline analytical',   test_roofline_analytical),
         ('Roofline all-configs',  test_roofline_all_configs),
         ('Validation train.py',   test_validation_train),

@@ -19,9 +19,9 @@ import fastops as _C
 # Model/Optimizer Constants (grouped for visibility and documentation)
 # These are architectural choices and numerical stability parameters that are typically fixed.
 # They can be modified here if needed for experimentation.
+# Note: RMSNorm epsilon (1e-5) is hardcoded in the C extension (fastops.c)
 
 WEIGHT_INIT_STD = 0.02        # Standard deviation for weight initialization (Gaussian)
-RMSNORM_EPS = 1e-5            # RMSNorm epsilon for numerical stability
 MLP_HIDDEN_DIM_MULTIPLIER = 4 # MLP hidden dimension as a multiple of n_embd (standard is 4x)
 ADAM_BETA1 = 0.9              # Adam optimizer momentum parameter (first moment)
 ADAM_BETA2 = 0.95             # Adam optimizer momentum parameter (second moment)
@@ -456,6 +456,8 @@ run_metrics = {
         'n_embd': n_embd, 'n_layer': n_layer, 'n_head': n_head,
         'block_size': block_size, 'num_steps': args.num_steps,
         'learning_rate': args.learning_rate,
+        'temperature': args.temperature,
+        'num_samples': args.num_samples,
         'val_split': args.val_split,
         'val_every': args.val_every,
         'early_stop_patience': args.early_stop_patience,
