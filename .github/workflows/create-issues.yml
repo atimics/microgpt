@@ -1,0 +1,28 @@
+name: Create GitHub Issues
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'claude/create-github-issues-*'
+    paths:
+      - 'create_issues.py'
+
+permissions:
+  issues: write
+
+jobs:
+  create-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Create issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python create_issues.py
