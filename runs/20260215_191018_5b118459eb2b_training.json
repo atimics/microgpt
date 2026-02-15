@@ -1,0 +1,63 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 5,
+    "learning_rate": 0.01
+  },
+  "num_params": 4064,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "loss_history": [
+    3.262669756552358,
+    3.3002637725644015,
+    3.211970377999541,
+    3.31523745614511,
+    3.316560000101607
+  ],
+  "loss_final": 3.316560000101607,
+  "loss_mean_last_50": 3.2813402726726033,
+  "training_time_seconds": 0.101,
+  "generated_samples": [
+    "skhufr",
+    "nuhnxe",
+    "ynmxremq",
+    "kuwhzdbk",
+    "gqirola",
+    "ckpvldoi",
+    "oavdrher",
+    "yl",
+    "gqelhexh",
+    "ypjhckdo",
+    "lhe",
+    "viyhvzyx",
+    "huvnccnl",
+    "orepyyxs",
+    "fxlulwed",
+    "hojgwmcz",
+    "jliirgww",
+    "rupntfxq",
+    "rcmwyprn",
+    ""
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-15T19:10:18.637303+00:00",
+    "timestamp_local": "20260215_191018",
+    "machine": {
+      "machine_id": "5b118459eb2b",
+      "hostname": "runnervmjduv7",
+      "platform": "Linux-6.14.0-1017-azure-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    },
+    "git": {
+      "commit": "4ee2f746e1abe39e16ccf30cfa2686e496e42cfe",
+      "commit_short": "4ee2f746",
+      "branch": "copilot/fix-dataset-download-error-handling",
+      "dirty": true
+    }
+  }
+}
