@@ -33,7 +33,8 @@ random.seed(args.seed)
 if not os.path.exists('input.txt'):
     import urllib.request
     urllib.request.urlretrieve('https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt', 'input.txt')
-docs = [l.strip() for l in open('input.txt').read().strip().split('\n') if l.strip()] # list[str] of documents
+with open('input.txt') as f:
+    docs = [l.strip() for l in f.read().strip().split('\n') if l.strip()] # list[str] of documents
 random.shuffle(docs)
 
 # Tokenizer: simple character-level tokenization with a BOS token delimiter
