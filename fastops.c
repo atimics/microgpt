@@ -285,7 +285,7 @@ static PyObject* fastops_cross_entropy_forward(PyObject* self, PyObject* args) {
     }
     for (Py_ssize_t i = 0; i < n; i++) buf[i] /= total;
 
-    double loss = -log(buf[target]);
+    double loss = -log(fmax(buf[target], 1e-30));
     PyObject *probs = darr_new(buf, n);
     free(buf);
 
