@@ -926,20 +926,46 @@ def create_issue(issue: dict, assignee: str = "") -> bool:
         return False
 
 
-def check_existing_issues() -> set:
-    """Get titles of existing open issues to avoid duplicates."""
+def get_existing_issues() -> list[dict]:
+    """Get all existing issues (number, title, assignees)."""
     result = subprocess.run(
         ["gh", "issue", "list", "--repo", REPO, "--state", "all",
-         "--limit", "200", "--json", "title"],
+         "--limit", "200", "--json", "number,title,assignees"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
-        return set()
+        return []
     try:
-        issues = json.loads(result.stdout)
-        return {i["title"] for i in issues}
+        return json.loads(result.stdout)
     except (json.JSONDecodeError, KeyError):
-        return set()
+        return []
+
+
+def assign_existing_issues(issues: list[dict], assignee: str) -> tuple[int, int]:
+    """Assign existing unassigned issues to the given user. Returns (assigned, skipped)."""
+    assigned = 0
+    skipped = 0
+    for issue in issues:
+        num = issue["number"]
+        title = issue["title"]
+        current_assignees = [a.get("login", "") for a in issue.get("assignees", [])]
+
+        if assignee in current_assignees:
+            print(f"  #{num} already assigned to {assignee}: {title}")
+            skipped += 1
+            continue
+
+        result = subprocess.run(
+            ["gh", "issue", "edit", str(num), "--repo", REPO,
+             "--add-assignee", assignee],
+            capture_output=True, text=True,
+        )
+        if result.returncode == 0:
+            print(f"  #{num} assigned to {assignee}: {title}")
+            assigned += 1
+        else:
+            print(f"  #{num} FAILED: {result.stderr.strip()}")
+    return assigned, skipped
 
 
 def main():
@@ -963,11 +989,20 @@ def main():
         print(f"Assigning to: {assignee}")
     print()
 
-    # Check for existing issues to avoid duplicates
-    existing = check_existing_issues()
-    if existing:
-        print(f"Found {len(existing)} existing issues, will skip duplicates.\n")
+    # Get existing issues
+    existing_issues = get_existing_issues()
+    existing_titles = {i["title"] for i in existing_issues}
+    if existing_titles:
+        print(f"Found {len(existing_titles)} existing issues.\n")
 
+    # Assign existing issues to the assignee
+    if assignee and existing_issues:
+        print(f"--- Assigning existing issues to {assignee} ---")
+        assigned, assign_skipped = assign_existing_issues(existing_issues, assignee)
+        print(f"Existing issues: {assigned} assigned, {assign_skipped} already assigned.\n")
+
+    # Create new issues
+    print("--- Creating new issues ---")
     created = 0
     skipped = 0
     failed = 0
@@ -978,7 +1013,7 @@ def main():
         print(f"[{i}/{len(ISSUES)}] {title}")
         print(f"  Labels: {labels_str}")
 
-        if title in existing:
+        if title in existing_titles:
             print("  SKIPPED: issue with this title already exists")
             skipped += 1
             continue
