@@ -11,7 +11,12 @@ if sys.platform == 'win32':
     extra_compile_args = ['/O2', '/fp:fast']
 else:
     # GCC/Clang flags (Linux, macOS)
-    extra_compile_args = ['-O3', '-march=native', '-ffast-math']
+    extra_compile_args = ['-O3', '-ffast-math']
+    
+    # Add architecture-specific optimization
+    # Skip -march=native on macOS ARM (Apple Silicon) as it causes build failures
+    if not (sys.platform == 'darwin' and platform.machine() == 'arm64'):
+        extra_compile_args.append('-march=native')
     
     # Link flags
     if sys.platform == 'linux':
