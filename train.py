@@ -40,6 +40,8 @@ parser.add_argument('--seed', type=int, default=42, help='Random seed')
 parser.add_argument('--no-archive', action='store_true', help='Skip auto-archive to runs/')
 args = parser.parse_args()
 n_embd, block_size, n_layer, n_head = args.n_embd, args.block_size, args.n_layer, args.n_head
+if n_embd < n_head:
+    parser.error(f"n_embd ({n_embd}) must be >= n_head ({n_head}) to avoid division by zero in attention")
 assert n_embd % n_head == 0, f"n_embd ({n_embd}) must be divisible by n_head ({n_head})"
 head_dim = n_embd // n_head
 random.seed(args.seed)
@@ -48,7 +50,8 @@ random.seed(args.seed)
 if not os.path.exists('input.txt'):
     import urllib.request
     urllib.request.urlretrieve('https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt', 'input.txt')
-docs = [l.strip() for l in open('input.txt').read().strip().split('\n') if l.strip()] # list[str] of documents
+with open('input.txt') as f:
+    docs = [l.strip() for l in f.read().strip().split('\n') if l.strip()] # list[str] of documents
 random.shuffle(docs)
 docs_tokenized = None # pre-tokenized after stoi is built
 
@@ -133,7 +136,7 @@ print(f"num params: {num_params}")
 
 # Fused operations: each computes an entire vector operation as a single autograd node
 
-def embedding(param, idx):
+def embedding(param: Param, idx: int) -> Tensor:
     out = Tensor(_DA('d', param.data[idx]))  # copy row
     def _backward():
         og = out.grad
@@ -143,7 +146,7 @@ def embedding(param, idx):
     out._backward = _backward
     return out
 
-def linear(x, w):
+def linear(x: Tensor, w: Param) -> Tensor:
     n_out, n_in = w.nout, w.nin
     xd = x.data
     wd = w.data
@@ -178,7 +181,7 @@ def linear(x, w):
     out._backward = _backward
     return out
 
-def rmsnorm(x):
+def rmsnorm(x: Tensor) -> Tensor:
     xd = x.data
     n = len(xd)
     ms = sum(xi * xi for xi in xd) / n
@@ -193,7 +196,7 @@ def rmsnorm(x):
     out._backward = _backward
     return out
 
-def tensor_add(a, b):
+def tensor_add(a: Tensor, b: Tensor) -> Tensor:
     out_data = [ai + bi for ai, bi in zip(a.data, b.data)]
     out = Tensor(out_data, (a, b))
     def _backward():
@@ -203,7 +206,7 @@ def tensor_add(a, b):
     out._backward = _backward
     return out
 
-def squared_relu(x):
+def squared_relu(x: Tensor) -> Tensor:
     xd = x.data
     out_data = [max(0.0, xi) ** 2 for xi in xd]
     out = Tensor(out_data, (x,))
@@ -214,7 +217,8 @@ def squared_relu(x):
     out._backward = _backward
     return out
 
-def attention(q, keys, values, n_head, head_dim):
+def attention(q: Tensor, keys: list[Tensor], values: list[Tensor],
+              n_head: int, head_dim: int) -> Tensor:
     T = len(keys)
     children = (q,) + tuple(keys) + tuple(values)
     k_data = [k.data for k in keys]
@@ -276,7 +280,7 @@ def attention(q, keys, values, n_head, head_dim):
     out._backward = _backward
     return out
 
-def cross_entropy(logits, target):
+def cross_entropy(logits: Tensor, target: int) -> Tensor:
     max_val = max(logits.data)
     exps = [math.exp(v - max_val) for v in logits.data]
     total = sum(exps)
@@ -290,7 +294,7 @@ def cross_entropy(logits, target):
     out._backward = _backward
     return out
 
-def mean_loss(losses):
+def mean_loss(losses: list[Tensor]) -> Tensor:
     n = len(losses)
     avg = sum(l.data[0] for l in losses) / n
     out = Tensor([avg], tuple(losses))
@@ -302,7 +306,8 @@ def mean_loss(losses):
     return out
 
 # Model architecture (training: builds autograd graph)
-def gpt(token_id, pos_id, keys, values):
+def gpt(token_id: int, pos_id: int, keys: list[list[Tensor]], 
+        values: list[list[Tensor]]) -> Tensor:
     tok_emb = embedding(state_dict['wte'], token_id)
     pos_emb = embedding(state_dict['wpe'], pos_id)
     x = tensor_add(tok_emb, pos_emb)
@@ -326,7 +331,8 @@ def gpt(token_id, pos_id, keys, values):
     return linear(x, state_dict['lm_head'])
 
 # Model architecture (inference: plain floats, no autograd overhead)
-def gpt_inference(token_id, pos_id, keys, values):
+def gpt_inference(token_id: int, pos_id: int, keys: list[list], 
+                  values: list[list]) -> list:
     sd = state_dict
     x = [t + p for t, p in zip(sd['wte'].data[token_id], sd['wpe'].data[pos_id])]
     def _rmsnorm(x):

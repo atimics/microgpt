@@ -274,6 +274,12 @@ static PyObject* fastops_cross_entropy_forward(PyObject* self, PyObject* args) {
     memcpy(buf, lg.ptr, n * sizeof(double));
     darr_done(&lg);
 
+    if (target < 0 || target >= n) {
+        free(buf);
+        PyErr_Format(PyExc_IndexError, "target index %zd out of range [0, %zd)", target, n);
+        return NULL;
+    }
+
     /* softmax */
     double max_val = buf[0];
     for (Py_ssize_t i = 1; i < n; i++)
@@ -283,9 +289,15 @@ static PyObject* fastops_cross_entropy_forward(PyObject* self, PyObject* args) {
         buf[i] = exp(buf[i] - max_val);
         total += buf[i];
     }
+    /* Ensure total is never zero to prevent division by zero.
+     * Use 1e-30 (rather than DBL_MIN or a larger epsilon) as a pragmatic floor:
+     * it is safely above denormal/underflow ranges while being small enough
+     * that it does not materially affect typical probability or loss values. */
+    total = fmax(total, 1e-30);
     for (Py_ssize_t i = 0; i < n; i++) buf[i] /= total;
 
-    double loss = -log(buf[target]);
+    /* Apply the same epsilon when clamping buf[target] to avoid log(0). */
+    double loss = -log(fmax(buf[target], 1e-30));
     PyObject *probs = darr_new(buf, n);
     free(buf);
 
@@ -478,6 +490,11 @@ static PyObject* fastops_embedding_flat(PyObject* self, PyObject* args) {
     if (!PyArg_ParseTuple(args, "Onn", &data_obj, &idx, &dim)) return NULL;
     DArr d;
     if (darr_get(&d, data_obj, 0) < 0) return NULL;
+    if (idx < 0 || (idx + 1) * dim > d.n) {
+        darr_done(&d);
+        PyErr_Format(PyExc_IndexError, "embedding index %zd out of range for buffer of %zd elements with dim %zd", idx, d.n, dim);
+        return NULL;
+    }
     PyObject *result = darr_new(d.ptr + idx * dim, dim);
     darr_done(&d);
     return result;

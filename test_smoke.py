@@ -70,6 +70,58 @@ def test_c_extension_ops():
     print("  PASS: C extension ops correct")
 
 
+def test_c_extension_bounds_checking():
+    """Verify C extension bounds checking works correctly."""
+    import array
+    try:
+        import fastops
+    except ImportError:
+        print("  SKIP: C extension not available")
+        return
+
+    # Test embedding_flat bounds checking
+    data = array.array('d', [10.0, 20.0, 30.0, 40.0, 50.0, 60.0])  # 3x2 (3 rows, dim=2)
+    
+    # Valid access: idx=0 should work
+    try:
+        row0 = fastops.embedding_flat(data, 0, 2)
+        assert abs(row0[0] - 10.0) < 1e-10 and abs(row0[1] - 20.0) < 1e-10, \
+            f"embedding_flat(0): expected [10,20], got {list(row0)}"
+    except Exception as e:
+        raise AssertionError(f"embedding_flat(0) should succeed but got: {e}")
+    
+    # Valid access: idx=2 (last row) should work
+    try:
+        row2 = fastops.embedding_flat(data, 2, 2)
+        assert abs(row2[0] - 50.0) < 1e-10 and abs(row2[1] - 60.0) < 1e-10, \
+            f"embedding_flat(2): expected [50,60], got {list(row2)}"
+    except Exception as e:
+        raise AssertionError(f"embedding_flat(2) should succeed but got: {e}")
+    
+    # Negative index should raise IndexError
+    try:
+        fastops.embedding_flat(data, -1, 2)
+        raise AssertionError("embedding_flat(-1) should raise IndexError but succeeded")
+    except IndexError as e:
+        assert "out of range" in str(e), f"Expected 'out of range' in error message, got: {e}"
+    
+    # Out of bounds positive index should raise IndexError
+    try:
+        fastops.embedding_flat(data, 3, 2)  # idx=3 is beyond the 3 rows (0,1,2)
+        raise AssertionError("embedding_flat(3) should raise IndexError but succeeded")
+    except IndexError as e:
+        assert "out of range" in str(e), f"Expected 'out of range' in error message, got: {e}"
+    
+    # Way out of bounds should raise IndexError
+    try:
+        fastops.embedding_flat(data, 100, 2)
+        raise AssertionError("embedding_flat(100) should raise IndexError but succeeded")
+    except IndexError as e:
+        assert "out of range" in str(e), f"Expected 'out of range' in error message, got: {e}"
+
+    print("  PASS: C extension bounds checking correct")
+
+
 def test_training_basic():
     """Train for 5 steps with reference, verify loss is recorded."""
     rc, out, err = run([sys.executable, 'train.py', '--num-steps', '5'])
@@ -220,6 +272,44 @@ def test_validation_n_embd_divisibility():
     print("  PASS: n_embd divisibility validation")
 
 
+def test_validation_train():
+    """Test that train.py validates n_embd >= n_head."""
+    # Should fail with n_embd < n_head
+    rc, out, err = run([sys.executable, 'train.py', '--n-embd', '2', '--n-head', '4', '--num-steps', '1'])
+    assert rc != 0, f"train.py should have failed with n_embd=2, n_head=4 (rc={rc})"
+    assert "must be >= n_head" in err or "must be >= n_head" in out, \
+        f"Expected validation error message, got:\nstdout: {out}\nstderr: {err}"
+    print("  PASS: train.py validates n_embd >= n_head")
+
+
+def test_validation_train_fast():
+    """Test that train_fast.py validates n_embd >= n_head."""
+    try:
+        import fastops
+    except ImportError:
+        print("  SKIP: fastops not available")
+        return
+    
+    # Should fail with n_embd < n_head
+    rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '2', '--n-head', '4', '--num-steps', '1'])
+    assert rc != 0, f"train_fast.py should have failed with n_embd=2, n_head=4 (rc={rc})"
+    assert "must be >= n_head" in err or "must be >= n_head" in out, \
+        f"Expected validation error message, got:\nstdout: {out}\nstderr: {err}"
+    print("  PASS: train_fast.py validates n_embd >= n_head")
+
+
+def test_validation_roofline():
+    """Test that roofline.py handles invalid configs gracefully."""
+    # Should skip invalid config but not crash
+    rc, out, err = run([sys.executable, 'roofline.py', '--n-embd', '2', '--n-head', '4', '--no-measure'])
+    assert rc == 0 or "ERROR: Config" in out or "must be >= n_head" in out, \
+        f"roofline.py should handle n_embd=2, n_head=4 gracefully (rc={rc}):\nstdout: {out}\nstderr: {err}"
+    if rc == 0:
+        assert "ERROR: Config" in out or "skipped" in out, \
+            f"Expected validation error/skip message, got:\n{out}"
+    print("  PASS: roofline.py handles invalid n_embd/n_head gracefully")
+
+
 def main():
     parser = argparse.ArgumentParser(description='microgpt smoke tests')
     parser.add_argument('--quick', action='store_true',
@@ -231,6 +321,7 @@ def main():
     tests = [
         ('C extension build',     test_c_extension_builds),
         ('C extension ops',       test_c_extension_ops),
+        ('C bounds checking',     test_c_extension_bounds_checking),
         ('Parameter validation',  test_validation_n_embd_divisibility),
         ('Reference training',    test_training_basic),
         ('Fast training',         test_training_fast),
@@ -239,6 +330,9 @@ def main():
         ('Ref/fast equivalence',  test_equivalence),
         ('Roofline analytical',   test_roofline_analytical),
         ('Roofline all-configs',  test_roofline_all_configs),
+        ('Validation train.py',   test_validation_train),
+        ('Validation train_fast.py', test_validation_train_fast),
+        ('Validation roofline.py', test_validation_roofline),
     ]
 
     if not args.quick:

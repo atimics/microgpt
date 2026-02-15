@@ -643,6 +643,10 @@ def main():
     points = []
 
     for n_embd, n_layer, n_head, block_size in configs:
+        if n_embd < n_head:
+            print(f"\n  ERROR: Config e{n_embd}_L{n_layer}_h{n_head}_b{block_size} skipped: "
+                  f"n_embd ({n_embd}) must be >= n_head ({n_head}) to avoid division by zero in attention")
+            continue
         r = analyze_config(
             n_embd, n_layer, n_head, block_size, args.vocab_size,
             cpu, bw_python, bw_raw, do_measure=not args.no_measure,
