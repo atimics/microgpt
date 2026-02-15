@@ -1,0 +1,78 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 20,
+    "learning_rate": 0.01
+  },
+  "num_params": 4064,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "loss_history": [
+    3.262669756552358,
+    3.3002637725644015,
+    3.2103899246392116,
+    3.3031824260539,
+    3.3030541143641483,
+    3.1825540405641,
+    3.2000494418033254,
+    3.2271463361795054,
+    3.065416084006521,
+    3.234819685219083,
+    3.0688442605876176,
+    3.076437706724435,
+    3.2783691361292626,
+    3.31067719676565,
+    3.0268100200101746,
+    2.966742514638482,
+    3.009716394587919,
+    3.0052360906719002,
+    2.926038062929736,
+    2.7506444805945427
+  ],
+  "loss_final": 2.7506444805945427,
+  "loss_mean_last_50": 3.1354530722793137,
+  "training_time_seconds": 0.2581,
+  "generated_samples": [
+    "riepan",
+    "nshlwd",
+    "ynlunbej",
+    "ktviyd",
+    "mgqhnn",
+    "caaiire",
+    "pin",
+    "wdqhcpyi",
+    "",
+    "hoei",
+    "dwiyng",
+    "djendg",
+    "",
+    "uixerzxu",
+    "hrtn",
+    "donjn",
+    "qxzuoeue",
+    "ulve",
+    "inhesj",
+    "yikhen"
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-15T19:23:05.367463+00:00",
+    "timestamp_local": "20260215_192305",
+    "machine": {
+      "machine_id": "5b118459eb2b",
+      "hostname": "runnervmjduv7",
+      "platform": "Linux-6.14.0-1017-azure-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    },
+    "git": {
+      "commit": "122924c6f7e8d5ca1adaa8591390e1bf377fb4cc",
+      "commit_short": "122924c6",
+      "branch": "copilot/add-inline-documentation-fastops-c",
+      "dirty": true
+    }
+  }
+}
