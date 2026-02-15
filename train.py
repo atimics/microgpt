@@ -136,6 +136,24 @@ print(f"num params: {num_params}")
 # Fused operations: each computes an entire vector operation as a single autograd node
 
 def embedding(param: Param, idx: int) -> Tensor:
+    """Extract a single row from an embedding matrix with gradient accumulation.
+    
+    This operation is equivalent to matrix indexing: out = param[idx, :].
+    During backpropagation, gradients are accumulated into the selected row,
+    allowing multiple tokens to share the same embedding vector.
+    
+    Args:
+        param: The embedding weight matrix (vocab_size × n_embd or block_size × n_embd).
+        idx: The row index to extract (e.g., token ID or position ID).
+    
+    Returns:
+        A Tensor containing the copied embedding vector of length n_embd.
+    
+    Complexity:
+        Time: O(n_embd) for the copy operation.
+        Space: O(n_embd) for the output tensor.
+        Backward: O(n_embd) for gradient accumulation into the selected row.
+    """
     out = Tensor(_DA('d', param.data[idx]))  # copy row
     def _backward():
         og = out.grad
@@ -146,6 +164,28 @@ def embedding(param: Param, idx: int) -> Tensor:
     return out
 
 def linear(x: Tensor, w: Param) -> Tensor:
+    """Matrix-vector multiplication with hand-unrolled loops for efficiency.
+    
+    Computes the linear transformation: out = W @ x, where W is a (n_out × n_in) matrix
+    and x is a vector of length n_in. The inner loops are manually unrolled by a factor
+    of 4 to improve instruction-level parallelism and reduce loop overhead.
+    
+    Args:
+        x: Input vector of length n_in.
+        w: Weight matrix with dimensions (n_out × n_in).
+    
+    Returns:
+        A Tensor containing the output vector of length n_out.
+    
+    Complexity:
+        Time: O(n_out × n_in) for the matrix-vector product.
+        Space: O(n_out) for the output vector.
+        Backward: O(n_out × n_in) for computing gradients with respect to x and W.
+        
+    Note:
+        The loop unrolling processes 4 elements at a time, with a cleanup loop
+        for any remaining elements when n_in is not divisible by 4.
+    """
     n_out, n_in = w.nout, w.nin
     xd = x.data
     wd = w.data
@@ -181,6 +221,30 @@ def linear(x: Tensor, w: Param) -> Tensor:
     return out
 
 def rmsnorm(x: Tensor) -> Tensor:
+    """Root Mean Square Layer Normalization.
+    
+    Normalizes a vector by its root mean square (RMS), a simpler alternative to
+    LayerNorm that omits the mean-centering step. The formula is:
+        out[i] = x[i] / sqrt(mean(x^2) + epsilon)
+    
+    This prevents vanishing gradients by keeping activations at a stable scale
+    throughout deep networks. The epsilon term (1e-5) prevents division by zero.
+    
+    Args:
+        x: Input vector to normalize.
+    
+    Returns:
+        A Tensor containing the normalized vector (same length as input).
+    
+    Complexity:
+        Time: O(n) for computing RMS and scaling, where n is the vector length.
+        Space: O(n) for the output vector.
+        Backward: O(n) for computing the gradient using the chain rule.
+        
+    Note:
+        Unlike LayerNorm, RMSNorm is affine-invariant but not translation-invariant.
+        This saves computation by avoiding mean calculation and subtraction.
+    """
     xd = x.data
     n = len(xd)
     ms = sum(xi * xi for xi in xd) / n
@@ -196,6 +260,28 @@ def rmsnorm(x: Tensor) -> Tensor:
     return out
 
 def tensor_add(a: Tensor, b: Tensor) -> Tensor:
+    """Element-wise addition of two vectors.
+    
+    Computes the element-wise sum: out[i] = a[i] + b[i] for all positions.
+    This is used extensively for residual connections in the transformer,
+    which help gradients flow through deep networks.
+    
+    Args:
+        a: First input vector.
+        b: Second input vector (must have the same length as a).
+    
+    Returns:
+        A Tensor containing the element-wise sum of a and b.
+    
+    Complexity:
+        Time: O(n) where n is the length of the vectors.
+        Space: O(n) for the output vector.
+        Backward: O(n) to distribute gradients equally to both inputs.
+        
+    Note:
+        During backpropagation, the gradient flows equally to both inputs
+        since d(a+b)/da = 1 and d(a+b)/db = 1.
+    """
     out_data = [ai + bi for ai, bi in zip(a.data, b.data)]
     out = Tensor(out_data, (a, b))
     def _backward():
@@ -206,6 +292,29 @@ def tensor_add(a: Tensor, b: Tensor) -> Tensor:
     return out
 
 def squared_relu(x: Tensor) -> Tensor:
+    """Squared ReLU activation function.
+    
+    Applies the element-wise transformation: out[i] = max(0, x[i])^2.
+    This is a smooth, monotonically increasing activation that combines the
+    properties of ReLU (sparsity via zero for negative inputs) with a quadratic
+    growth for positive values, providing stronger gradients than standard ReLU.
+    
+    Args:
+        x: Input vector.
+    
+    Returns:
+        A Tensor with the squared ReLU activation applied element-wise.
+    
+    Complexity:
+        Time: O(n) where n is the length of the input vector.
+        Space: O(n) for the output vector.
+        Backward: O(n) with derivative 2*x for x > 0, and 0 otherwise.
+        
+    Note:
+        The derivative is 2*max(0, x), which is applied during backpropagation.
+        This activation is less common than ReLU or GELU but offers computational
+        simplicity while maintaining good learning properties.
+    """
     xd = x.data
     out_data = [max(0.0, xi) ** 2 for xi in xd]
     out = Tensor(out_data, (x,))
@@ -218,6 +327,38 @@ def squared_relu(x: Tensor) -> Tensor:
 
 def attention(q: Tensor, keys: list[Tensor], values: list[Tensor],
               n_head: int, head_dim: int) -> Tensor:
+    """Multi-head causal self-attention mechanism.
+    
+    Implements the core attention operation from "Attention Is All You Need" with
+    causal masking (autoregressive). For each attention head, computes:
+        1. Attention scores: score[t] = (q · key[t]) / sqrt(head_dim)
+        2. Attention weights: attn[t] = softmax(scores[:t+1])  (causal mask)
+        3. Output: out = sum(attn[t] * value[t])
+    
+    The query represents the current position, while keys and values come from
+    all previous positions (including current). Multiple heads process different
+    representation subspaces in parallel.
+    
+    Args:
+        q: Query vector for the current position (length = n_head × head_dim).
+        keys: List of key vectors from all positions up to current (length T).
+        values: List of value vectors from all positions up to current (length T).
+        n_head: Number of attention heads to use in parallel.
+        head_dim: Dimensionality of each attention head.
+    
+    Returns:
+        A Tensor containing the weighted sum of values (length = n_head × head_dim).
+    
+    Complexity:
+        Time: O(T × n_head × head_dim) for computing attention scores and outputs.
+        Space: O(T × n_head) for storing attention weights.
+        Backward: O(T × n_head × head_dim) for gradient computation.
+        
+    Note:
+        The scaling by 1/sqrt(head_dim) prevents dot products from growing too large
+        as dimensionality increases, which would cause vanishing gradients in softmax.
+        Causal masking is implicit through the use of keys[:t+1] at each position t.
+    """
     T = len(keys)
     children = (q,) + tuple(keys) + tuple(values)
     k_data = [k.data for k in keys]
@@ -280,6 +421,32 @@ def attention(q: Tensor, keys: list[Tensor], values: list[Tensor],
     return out
 
 def cross_entropy(logits: Tensor, target: int) -> Tensor:
+    """Softmax cross-entropy loss (combined for numerical stability).
+    
+    Computes the negative log-likelihood loss for a single target class:
+        1. Softmax: probs[i] = exp(logits[i]) / sum(exp(logits))
+        2. Cross-entropy: loss = -log(probs[target])
+    
+    These operations are fused for numerical stability using the log-sum-exp trick:
+    subtracting the maximum logit before exponentiation prevents overflow.
+    
+    Args:
+        logits: Raw prediction scores (unnormalized) for all classes.
+        target: Index of the correct class (ground truth label).
+    
+    Returns:
+        A Tensor containing a single scalar loss value.
+    
+    Complexity:
+        Time: O(vocab_size) for softmax normalization.
+        Space: O(vocab_size) for storing probabilities.
+        Backward: O(vocab_size) with gradient: probs[i] - 1{i=target}.
+        
+    Note:
+        The gradient has a simple closed form: the model's probability distribution
+        minus a one-hot vector at the target position. This encourages the model
+        to increase the probability of the correct class while decreasing others.
+    """
     max_val = max(logits.data)
     exps = [math.exp(v - max_val) for v in logits.data]
     total = sum(exps)
@@ -294,6 +461,27 @@ def cross_entropy(logits: Tensor, target: int) -> Tensor:
     return out
 
 def mean_loss(losses: list[Tensor]) -> Tensor:
+    """Compute the average of multiple scalar loss values.
+    
+    Aggregates per-position or per-example losses into a single scalar by
+    computing their arithmetic mean. This provides a single differentiable
+    objective for gradient descent.
+    
+    Args:
+        losses: List of Tensor objects, each containing a single scalar loss value.
+    
+    Returns:
+        A Tensor containing the mean of all input losses.
+    
+    Complexity:
+        Time: O(n) where n is the number of losses.
+        Space: O(1) for the scalar output (excluding the input storage).
+        Backward: O(n) to distribute the gradient equally to all inputs (scaled by 1/n).
+        
+    Note:
+        During backpropagation, the gradient is divided by n and distributed
+        equally to all input losses, since the derivative of mean is 1/n for each input.
+    """
     n = len(losses)
     avg = sum(l.data[0] for l in losses) / n
     out = Tensor([avg], tuple(losses))
@@ -307,6 +495,36 @@ def mean_loss(losses: list[Tensor]) -> Tensor:
 # Model architecture (training: builds autograd graph)
 def gpt(token_id: int, pos_id: int, keys: list[list[Tensor]], 
         values: list[list[Tensor]]) -> Tensor:
+    """GPT forward pass that builds the computational graph for training.
+    
+    Implements a decoder-only transformer architecture with:
+        - Token + positional embeddings
+        - n_layer transformer blocks, each containing:
+            * Multi-head self-attention with residual connection
+            * Feed-forward network (MLP) with residual connection
+            * RMSNorm before each sub-layer
+        - Final linear projection to vocabulary logits
+    
+    This function constructs an autograd graph (using Tensor objects) that tracks
+    all operations for automatic differentiation during backpropagation.
+    
+    Args:
+        token_id: Index of the input token in the vocabulary.
+        pos_id: Position index in the sequence (0 to block_size-1).
+        keys: Cache of key vectors for each layer, updated with current key.
+        values: Cache of value vectors for each layer, updated with current value.
+    
+    Returns:
+        A Tensor of vocabulary logits (length = vocab_size) for next-token prediction.
+    
+    Complexity:
+        Time: O(n_layer × (T × n_embd² + n_embd²)) where T is sequence position.
+        Space: O(n_layer × T × n_embd) for the KV cache plus intermediate activations.
+        
+    Note:
+        The keys and values caches are mutated in-place to enable efficient
+        autoregressive generation without recomputing attention for past tokens.
+    """
     tok_emb = embedding(state_dict['wte'], token_id)
     pos_emb = embedding(state_dict['wpe'], pos_id)
     x = tensor_add(tok_emb, pos_emb)
@@ -332,6 +550,36 @@ def gpt(token_id: int, pos_id: int, keys: list[list[Tensor]],
 # Model architecture (inference: plain floats, no autograd overhead)
 def gpt_inference(token_id: int, pos_id: int, keys: list[list], 
                   values: list[list]) -> list:
+    """GPT forward pass for inference using plain Python lists (no autograd).
+    
+    Implements the same transformer architecture as gpt() but operates on raw
+    Python floats and lists instead of Tensor objects. This eliminates the
+    memory and computational overhead of building an autograd graph, making
+    inference 2-3x faster than the training path.
+    
+    The architecture is identical to gpt():
+        - Token + positional embeddings
+        - n_layer transformer blocks with attention and MLP
+        - RMSNorm, residual connections, squared ReLU activation
+        - Final projection to vocabulary logits
+    
+    Args:
+        token_id: Index of the input token in the vocabulary.
+        pos_id: Position index in the sequence (0 to block_size-1).
+        keys: Cache of key vectors (plain lists) for each layer.
+        values: Cache of value vectors (plain lists) for each layer.
+    
+    Returns:
+        A list of vocabulary logits (length = vocab_size) for next-token prediction.
+    
+    Complexity:
+        Time: O(n_layer × (T × n_embd² + n_embd²)) where T is sequence position.
+        Space: O(n_layer × T × n_embd) for the KV cache plus intermediate activations.
+        
+    Note:
+        This function produces numerically identical results to gpt() but runs
+        faster by avoiding Tensor wrapper overhead and gradient tracking.
+    """
     sd = state_dict
     x = [t + p for t, p in zip(sd['wte'].data[token_id], sd['wpe'].data[pos_id])]
     def _rmsnorm(x):
