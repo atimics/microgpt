@@ -14,8 +14,10 @@ Requires: gh CLI authenticated, or GH_TOKEN environment variable.
 import subprocess
 import json
 import sys
+import argparse
 
 REPO = "atimics/microgpt"
+DEFAULT_ASSIGNEE = "copilot"
 
 # ============================================================================
 # Issue definitions: bugs, then features organized by roadmap phase
@@ -889,7 +891,7 @@ def attention(q: Tensor, keys: list[Tensor], values: list[Tensor],
 ]
 
 
-def create_issue(issue: dict) -> bool:
+def create_issue(issue: dict, assignee: str = "") -> bool:
     """Create a single GitHub issue using the gh CLI."""
     title = issue["title"]
     body = issue["body"]
@@ -911,6 +913,8 @@ def create_issue(issue: dict) -> bool:
     ]
     for label in labels:
         cmd.extend(["--label", label])
+    if assignee:
+        cmd.extend(["--assignee", assignee])
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
@@ -939,13 +943,25 @@ def check_existing_issues() -> set:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Create GitHub issues for MicroGPT")
+    parser.add_argument("--assignee", default=DEFAULT_ASSIGNEE,
+                        help=f"GitHub user to assign issues to (default: {DEFAULT_ASSIGNEE})")
+    parser.add_argument("--no-assignee", action="store_true",
+                        help="Don't assign issues to anyone")
+    args = parser.parse_args()
+
+    assignee = "" if args.no_assignee else args.assignee
+
     # Check gh is available
     result = subprocess.run(["gh", "--version"], capture_output=True, text=True)
     if result.returncode != 0:
         print("Error: gh CLI not found. Install from https://cli.github.com/")
         sys.exit(1)
 
-    print(f"Creating {len(ISSUES)} issues for {REPO}...\n")
+    print(f"Creating {len(ISSUES)} issues for {REPO}...")
+    if assignee:
+        print(f"Assigning to: {assignee}")
+    print()
 
     # Check for existing issues to avoid duplicates
     existing = check_existing_issues()
@@ -967,7 +983,7 @@ def main():
             skipped += 1
             continue
 
-        if create_issue(issue):
+        if create_issue(issue, assignee=assignee):
             created += 1
         else:
             failed += 1
