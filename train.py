@@ -12,7 +12,6 @@ import random   # for random.seed, random.choices
 import json     # for json.dump
 import argparse # for argparse.ArgumentParser
 import array as _array  # for contiguous double arrays
-from typing import Callable
 _DA = _array.array      # shorthand for array.array constructor
 
 # Optional C extension for accelerated ops
