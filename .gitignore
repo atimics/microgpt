@@ -1,3 +1,12 @@
 _last_run.json
+report.md
+report.txt
+roofline_report.json
+roofline_compare.json
+roofline_output.txt
+roofline_compare.txt
 build/*
 *.so
+*.egg-info/
+__pycache__/
+charts/

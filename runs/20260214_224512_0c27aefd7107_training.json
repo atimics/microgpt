@@ -1,0 +1,68 @@
+{
+  "hyperparams": {
+    "n_embd": 64,
+    "n_layer": 2,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 10,
+    "learning_rate": 0.01
+  },
+  "num_params": 102272,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "loss_history": [
+    3.380872953148981,
+    3.3120118003478085,
+    3.1385438467032563,
+    3.2366947745665215,
+    3.219011600235738,
+    2.6069262230889008,
+    3.0735928524327694,
+    3.3853122150423403,
+    2.90119633506131,
+    3.402335516007297
+  ],
+  "loss_final": 3.402335516007297,
+  "loss_mean_last_50": 3.165649811663492,
+  "training_time_seconds": 4.1364,
+  "generated_samples": [
+    "xuon",
+    "xavye",
+    "ximaiuy",
+    "joan",
+    "juhzng",
+    "wa",
+    "juhie",
+    "jgheni",
+    "jondndmy",
+    "jtondr",
+    "juji",
+    "jazi",
+    "iuhivi",
+    "juhi",
+    "jrji",
+    "jug",
+    "juri",
+    "juao",
+    "xoon",
+    "juzeng"
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-14T22:45:12.283629+00:00",
+    "timestamp_local": "20260214_224512",
+    "machine": {
+      "machine_id": "0c27aefd7107",
+      "hostname": "codespaces-5dcacf",
+      "platform": "Linux-6.8.0-1030-azure-x86_64-with-glibc2.39",
+      "python": "3.12.1"
+    },
+    "git": {
+      "commit": "7342a710467194571b0b1843571bbdae33e8cdf4",
+      "commit_short": "7342a710",
+      "branch": "roofline-analysis",
+      "dirty": false
+    }
+  }
+}

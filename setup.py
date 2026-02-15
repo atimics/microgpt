@@ -6,7 +6,8 @@ setup(
         Extension(
             'fastops',
             sources=['fastops.c'],
-            extra_compile_args=['-O3', '-march=native'],
+            extra_compile_args=['-O3', '-march=native', '-ffast-math'],
+            extra_link_args=['-lmvec', '-lm'],
         ),
     ],
 )
