@@ -5,6 +5,7 @@ Requires the fastops C extension (python setup.py build_ext --inplace).
 """
 
 import os       # for os.path.exists
+import sys      # for sys.stderr, sys.exit
 import time     # for time.perf_counter
 import math     # for math.log, math.exp
 import random   # for random.seed, random.choices
@@ -34,7 +35,22 @@ random.seed(args.seed)
 # Dataset example: the names dataset (one name per line). rest of the code just assumes docs: list[str]
 if not os.path.exists('input.txt'):
     import urllib.request
-    urllib.request.urlretrieve('https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt', 'input.txt')
+    import tempfile
+    url = 'https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt'
+    try:
+        # Download to temporary file first for atomic operation
+        with tempfile.NamedTemporaryFile(mode='wb', delete=False, dir='.', prefix='.input_', suffix='.txt.tmp') as tmp_file:
+            tmp_path = tmp_file.name
+        urllib.request.urlretrieve(url, tmp_path)
+        # Atomic rename to final location
+        os.replace(tmp_path, 'input.txt')
+    except Exception as e:
+        # Clean up temp file if it exists
+        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        print(f"Error downloading dataset from {url}: {e}", file=sys.stderr)
+        print("Please manually download the dataset and save it as 'input.txt', or provide your own text file.", file=sys.stderr)
+        sys.exit(1)
 with open('input.txt') as f:
     docs = [l.strip() for l in f.read().strip().split('\n') if l.strip()] # list[str] of documents
 random.shuffle(docs)
