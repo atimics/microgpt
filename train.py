@@ -40,6 +40,8 @@ parser.add_argument('--seed', type=int, default=42, help='Random seed')
 parser.add_argument('--no-archive', action='store_true', help='Skip auto-archive to runs/')
 args = parser.parse_args()
 n_embd, block_size, n_layer, n_head = args.n_embd, args.block_size, args.n_layer, args.n_head
+if n_embd < n_head:
+    parser.error(f"n_embd ({n_embd}) must be >= n_head ({n_head}) to avoid division by zero in attention")
 head_dim = n_embd // n_head
 random.seed(args.seed)
 
