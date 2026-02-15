@@ -274,6 +274,12 @@ static PyObject* fastops_cross_entropy_forward(PyObject* self, PyObject* args) {
     memcpy(buf, lg.ptr, n * sizeof(double));
     darr_done(&lg);
 
+    if (target < 0 || target >= n) {
+        free(buf);
+        PyErr_Format(PyExc_IndexError, "target index %zd out of range [0, %zd)", target, n);
+        return NULL;
+    }
+
     /* softmax */
     double max_val = buf[0];
     for (Py_ssize_t i = 1; i < n; i++)
