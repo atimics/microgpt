@@ -283,10 +283,14 @@ static PyObject* fastops_cross_entropy_forward(PyObject* self, PyObject* args) {
         buf[i] = exp(buf[i] - max_val);
         total += buf[i];
     }
-    /* Ensure total is never zero to prevent division by zero */
+    /* Ensure total is never zero to prevent division by zero.
+     * Use 1e-30 (rather than DBL_MIN or a larger epsilon) as a pragmatic floor:
+     * it is safely above denormal/underflow ranges while being small enough
+     * that it does not materially affect typical probability or loss values. */
     total = fmax(total, 1e-30);
     for (Py_ssize_t i = 0; i < n; i++) buf[i] /= total;
 
+    /* Apply the same epsilon when clamping buf[target] to avoid log(0). */
     double loss = -log(fmax(buf[target], 1e-30));
     PyObject *probs = darr_new(buf, n);
     free(buf);
