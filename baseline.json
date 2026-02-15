@@ -1,7 +1,7 @@
 {
   "cpu": {
     "model": "AMD EPYC 7763 64-Core Processor",
-    "cores": 2,
+    "cores": 4,
     "freq_ghz": 2.445425,
     "has_avx2": true,
     "has_avx512": false,
@@ -13,28 +13,28 @@
     "peak_gflops": 39.1268
   },
   "bandwidth": {
-    "python_gbs": 2.0859857946620255,
-    "raw_gbs": 1.01395579437502,
+    "python_gbs": 2.011343120378092,
+    "raw_gbs": 2.1890405131868147,
     "cache_hierarchy": [
       {
         "level": "L1  (16 KB)",
         "size_bytes": 16384,
-        "bandwidth_gbs": 16.728205704313122
+        "bandwidth_gbs": 37.41251407953282
       },
       {
         "level": "L2  (256 KB)",
         "size_bytes": 262144,
-        "bandwidth_gbs": 36.51405321215347
+        "bandwidth_gbs": 41.32749737502699
       },
       {
         "level": "L3  (8 MB)",
         "size_bytes": 8388608,
-        "bandwidth_gbs": 25.099951516771842
+        "bandwidth_gbs": 28.05764299252577
       },
       {
         "level": "DRAM (64 MB)",
         "size_bytes": 67108864,
-        "bandwidth_gbs": 1.01395579437502
+        "bandwidth_gbs": 2.1890405131868147
       }
     ]
   },
@@ -66,11 +66,11 @@
       "oi_python": 0.05285075042284882,
       "oi_c": 0.23782837690281972,
       "oi_f32": 0.47565675380563943,
-      "ridge_point": 38.58827003806108,
+      "ridge_point": 17.873949689053052,
       "pure_python": false,
-      "step_time_ms": 4.0,
-      "achieved_gflops": 0.059244,
-      "efficiency_pct": 0.15141539814142735,
+      "step_time_ms": 0.5,
+      "achieved_gflops": 0.473952,
+      "efficiency_pct": 1.2113231851314188,
       "bottleneck": "memory"
     },
     {
@@ -100,11 +100,11 @@
       "oi_python": 0.05322081019059431,
       "oi_c": 0.2394936458576744,
       "oi_f32": 0.4789872917153488,
-      "ridge_point": 38.58827003806108,
+      "ridge_point": 17.873949689053052,
       "pure_python": false,
-      "step_time_ms": 12.5,
-      "achieved_gflops": 0.0682176,
-      "efficiency_pct": 0.17435006185018964,
+      "step_time_ms": 1.0,
+      "achieved_gflops": 0.85272,
+      "efficiency_pct": 2.1793757731273704,
       "bottleneck": "memory"
     },
     {
@@ -134,11 +134,11 @@
       "oi_python": 0.05348649968892559,
       "oi_c": 0.24068924860016516,
       "oi_f32": 0.4813784972003303,
-      "ridge_point": 38.58827003806108,
+      "ridge_point": 17.873949689053052,
       "pure_python": false,
-      "step_time_ms": 43.5,
-      "achieved_gflops": 0.07418372413793103,
-      "efficiency_pct": 0.1895982399223321,
+      "step_time_ms": 1.5,
+      "achieved_gflops": 2.151328,
+      "efficiency_pct": 5.49834895774763,
       "bottleneck": "memory"
     },
     {
@@ -168,11 +168,11 @@
       "oi_python": 0.054705944824318474,
       "oi_c": 0.24617675170943312,
       "oi_f32": 0.49235350341886625,
-      "ridge_point": 38.58827003806108,
+      "ridge_point": 17.873949689053052,
       "pure_python": false,
-      "step_time_ms": 4.5,
-      "achieved_gflops": 0.09523911111111112,
-      "efficiency_pct": 0.24341144972528064,
+      "step_time_ms": 1.0,
+      "achieved_gflops": 0.428576,
+      "efficiency_pct": 1.095351523763763,
       "bottleneck": "memory"
     },
     {
@@ -202,11 +202,11 @@
       "oi_python": 0.05322928760912857,
       "oi_c": 0.23953179424107857,
       "oi_f32": 0.47906358848215713,
-      "ridge_point": 38.58827003806108,
+      "ridge_point": 17.873949689053052,
       "pure_python": false,
-      "step_time_ms": 28.000000000000004,
-      "achieved_gflops": 0.05831599999999999,
-      "efficiency_pct": 0.14904362227424678,
+      "step_time_ms": 1.5,
+      "achieved_gflops": 1.0885653333333332,
+      "efficiency_pct": 2.7821476157859397,
       "bottleneck": "memory"
     },
     {
@@ -236,11 +236,11 @@
       "oi_python": 0.054522736122689285,
       "oi_c": 0.24535231255210177,
       "oi_f32": 0.49070462510420354,
-      "ridge_point": 38.58827003806108,
+      "ridge_point": 17.873949689053052,
       "pure_python": false,
-      "step_time_ms": 87.0,
-      "achieved_gflops": 0.12947310344827587,
-      "efficiency_pct": 0.3309064463443876,
+      "step_time_ms": 2.5,
+      "achieved_gflops": 4.505664,
+      "efficiency_pct": 11.51554433278469,
       "bottleneck": "memory"
     }
   ]
