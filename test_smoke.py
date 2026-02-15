@@ -254,21 +254,21 @@ def test_validation_n_embd_divisibility():
     assert rc != 0, "train.py should fail with n_embd=16, n_head=5"
     assert 'n_embd (16) must be divisible by n_head (5)' in err, \
         f"Expected validation error message in stderr, got:\n{err}"
-    
+
     # Test train_fast.py with invalid config (16 % 5 != 0)
     rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '16', '--n-head', '5', '--num-steps', '1'])
     assert rc != 0, "train_fast.py should fail with n_embd=16, n_head=5"
     assert 'n_embd (16) must be divisible by n_head (5)' in err, \
         f"Expected validation error message in stderr, got:\n{err}"
-    
+
     # Test train.py with valid config (16 % 4 == 0)
     rc, out, err = run([sys.executable, 'train.py', '--n-embd', '16', '--n-head', '4', '--num-steps', '1'])
     assert rc == 0, f"train.py should succeed with n_embd=16, n_head=4:\n{err}"
-    
+
     # Test train_fast.py with valid config (32 % 8 == 0)
     rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '32', '--n-head', '8', '--num-steps', '1'])
     assert rc == 0, f"train_fast.py should succeed with n_embd=32, n_head=8:\n{err}"
-    
+
     print("  PASS: n_embd divisibility validation")
 
 
@@ -289,7 +289,7 @@ def test_validation_train_fast():
     except ImportError:
         print("  SKIP: fastops not available")
         return
-    
+
     # Should fail with n_embd < n_head
     rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '2', '--n-head', '4', '--num-steps', '1'])
     assert rc != 0, f"train_fast.py should have failed with n_embd=2, n_head=4 (rc={rc})"
@@ -310,6 +310,43 @@ def test_validation_roofline():
     print("  PASS: roofline.py handles invalid n_embd/n_head gracefully")
 
 
+def test_empty_dataset_handling():
+    """Verify proper error handling for empty dataset."""
+    # Save current input.txt
+    input_backup = None
+    if os.path.exists('input.txt'):
+        with open('input.txt', 'r') as f:
+            input_backup = f.read()
+
+    try:
+        # Create empty input.txt (only whitespace)
+        with open('input.txt', 'w') as f:
+            f.write('   \n\n  \n')
+
+        # Test train.py
+        rc, out, err = run([sys.executable, 'train.py', '--num-steps', '1'])
+        assert rc == 1, f"train.py should exit with code 1 for empty dataset, got {rc}"
+        assert 'Error: input.txt contains no non-empty lines' in err, \
+            f"Expected error message in stderr, got:\n{err}"
+
+        # Test train_fast.py
+        rc, out, err = run([sys.executable, 'train_fast.py', '--num-steps', '1'])
+        assert rc == 1, f"train_fast.py should exit with code 1 for empty dataset, got {rc}"
+        assert 'Error: input.txt contains no non-empty lines' in err, \
+            f"Expected error message in stderr, got:\n{err}"
+
+        print("  PASS: empty dataset handling")
+
+    finally:
+        # Restore input.txt
+        if input_backup is not None:
+            with open('input.txt', 'w') as f:
+                f.write(input_backup)
+        elif os.path.exists('input.txt'):
+            os.remove('input.txt')
+
+
+
 def main():
     parser = argparse.ArgumentParser(description='microgpt smoke tests')
     parser.add_argument('--quick', action='store_true',
@@ -328,6 +365,7 @@ def main():
         ('Alternate config',      test_training_alternate_config),
         ('Loss decreases',        test_training_loss_decreases),
         ('Ref/fast equivalence',  test_equivalence),
+        ('Empty dataset handling', test_empty_dataset_handling),
         ('Roofline analytical',   test_roofline_analytical),
         ('Roofline all-configs',  test_roofline_all_configs),
         ('Validation train.py',   test_validation_train),
