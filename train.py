@@ -50,7 +50,7 @@ parser.add_argument('--n-head', type=int, default=4, help='Number of attention h
 parser.add_argument('--learning-rate', type=float, default=1e-2, help='Learning rate')
 parser.add_argument('--grad-clip', type=float, default=0.0, help='Max gradient norm (0 = disabled)')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
-parser.add_argument('--temperature', type=float, default=0.5, help='Sampling temperature for inference (0, 1]; lower = less random')
+parser.add_argument('--temperature', type=float, default=0.5, help='Sampling temperature for inference; typical range (0, 1], lower = less random')
 parser.add_argument('--num-samples', type=int, default=20, help='Number of samples to generate during inference')
 parser.add_argument('--no-archive', action='store_true', help='Skip auto-archive to runs/')
 parser.add_argument('--val-split', type=float, default=0.0, help='Fraction of data for validation (0 = no validation)')
