@@ -25,6 +25,9 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Install build deps
+        run: pip install setuptools
+
       - name: Build C extension
         run: python setup.py build_ext --inplace
 
@@ -46,6 +49,9 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install build deps
+        run: pip install setuptools
+
       - name: Build C extension
         run: python setup.py build_ext --inplace
 
@@ -55,8 +61,16 @@ jobs:
       - name: Run benchmark
         run: python benchmark.py run --output current.json
 
-      # --- Compare against baseline (PRs and feature branches) ---
-      - name: Compare against baseline
+      # --- Generate charts and reports ---
+      - name: Generate charts
+        id: charts
+        if: hashFiles('baseline.json') != ''
+        run: |
+          mkdir -p charts
+          python report_charts.py full baseline.json current.json --output-dir charts
+          echo "has_charts=true" >> "$GITHUB_OUTPUT"
+
+      - name: Generate comparison text
         id: compare
         if: hashFiles('baseline.json') != ''
         run: |
@@ -64,22 +78,29 @@ jobs:
           python benchmark.py compare baseline.json current.json --output report.txt
           echo "has_baseline=true" >> "$GITHUB_OUTPUT"
 
-      - name: Post comparison to step summary
-        if: steps.compare.outputs.has_baseline == 'true'
+      # --- Step summary with charts ---
+      - name: Post report to step summary
+        if: steps.charts.outputs.has_charts == 'true'
+        run: |
+          # Use the chart-enhanced report
+          cat charts/report.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post text comparison to step summary
+        if: steps.compare.outputs.has_baseline == 'true' && steps.charts.outputs.has_charts != 'true'
         run: |
           echo "## Benchmark Comparison" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          # Strip the HTML comment marker line
           tail -n +2 report.md >> "$GITHUB_STEP_SUMMARY"
 
+      # --- PR comment with charts ---
       - name: Comment on PR
-        if: github.event_name == 'pull_request' && steps.compare.outputs.has_baseline == 'true'
+        if: github.event_name == 'pull_request' && steps.charts.outputs.has_charts == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           PR_NUM=${{ github.event.pull_request.number }}
           COMMENT_TAG="<!-- microgpt-benchmark -->"
-          BODY=$(cat report.md)
+          BODY=$(cat charts/report.md)
 
           # Find existing benchmark comment and update it, or create new
           EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR_NUM}/comments" \
@@ -93,6 +114,26 @@ jobs:
           else
             gh pr comment "$PR_NUM" --body "$BODY"
             echo "Created new comment"
+          fi
+
+      - name: Comment on PR (text fallback)
+        if: github.event_name == 'pull_request' && steps.compare.outputs.has_baseline == 'true' && steps.charts.outputs.has_charts != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUM=${{ github.event.pull_request.number }}
+          COMMENT_TAG="<!-- microgpt-benchmark -->"
+          BODY=$(cat report.md)
+
+          EXISTING=$(gh api "repos/${{ github.repository }}/issues/${PR_NUM}/comments" \
+            --jq ".[] | select(.body | startswith(\"${COMMENT_TAG}\")) | .id" \
+            | head -1)
+
+          if [ -n "$EXISTING" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${EXISTING}" \
+              -X PATCH -f body="$BODY"
+          else
+            gh pr comment "$PR_NUM" --body "$BODY"
           fi
 
       # --- Update baseline on main branch pushes ---
@@ -118,7 +159,7 @@ jobs:
             echo "Baseline updated"
           fi
 
-      # --- Generate detailed reports ---
+      # --- Generate detailed roofline reports ---
       - name: Generate roofline report
         run: |
           python roofline.py --all-configs --json roofline_report.json 2>&1 | tee roofline_output.txt
@@ -156,11 +197,12 @@ jobs:
           " >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload reports
+      # --- Upload all artifacts ---
+      - name: Upload reports and charts
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: roofline-reports
+          name: performance-reports
           path: |
             baseline.json
             current.json
@@ -170,4 +212,5 @@ jobs:
             roofline_output.txt
             roofline_compare.json
             roofline_compare.txt
+            charts/
           retention-days: 30
