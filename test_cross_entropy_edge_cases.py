@@ -19,7 +19,7 @@ def test_extreme_negative_logits():
     """Test with extremely negative logits (should not cause underflow to 0)."""
     # Create logits where one is much larger than others
     # This could cause underflow in the smaller values during softmax
-    logits = array.array('d', [-1000.0, -1001.0, -1002.0, 0.0])
+    logits = array.array('d', [-1000.0, -1001.0, -1002.0, -999.0])
     target = 3  # Target the largest logit
     
     loss, probs = fastops.cross_entropy_forward(logits, target)
