@@ -70,6 +70,58 @@ def test_c_extension_ops():
     print("  PASS: C extension ops correct")
 
 
+def test_c_extension_bounds_checking():
+    """Verify C extension bounds checking works correctly."""
+    import array
+    try:
+        import fastops
+    except ImportError:
+        print("  SKIP: C extension not available")
+        return
+
+    # Test embedding_flat bounds checking
+    data = array.array('d', [10.0, 20.0, 30.0, 40.0, 50.0, 60.0])  # 3x2 (3 rows, dim=2)
+    
+    # Valid access: idx=0 should work
+    try:
+        row0 = fastops.embedding_flat(data, 0, 2)
+        assert abs(row0[0] - 10.0) < 1e-10 and abs(row0[1] - 20.0) < 1e-10, \
+            f"embedding_flat(0): expected [10,20], got {list(row0)}"
+    except Exception as e:
+        raise AssertionError(f"embedding_flat(0) should succeed but got: {e}")
+    
+    # Valid access: idx=2 (last row) should work
+    try:
+        row2 = fastops.embedding_flat(data, 2, 2)
+        assert abs(row2[0] - 50.0) < 1e-10 and abs(row2[1] - 60.0) < 1e-10, \
+            f"embedding_flat(2): expected [50,60], got {list(row2)}"
+    except Exception as e:
+        raise AssertionError(f"embedding_flat(2) should succeed but got: {e}")
+    
+    # Negative index should raise IndexError
+    try:
+        fastops.embedding_flat(data, -1, 2)
+        raise AssertionError("embedding_flat(-1) should raise IndexError but succeeded")
+    except IndexError as e:
+        assert "out of range" in str(e), f"Expected 'out of range' in error message, got: {e}"
+    
+    # Out of bounds positive index should raise IndexError
+    try:
+        fastops.embedding_flat(data, 3, 2)  # idx=3 is beyond the 3 rows (0,1,2)
+        raise AssertionError("embedding_flat(3) should raise IndexError but succeeded")
+    except IndexError as e:
+        assert "out of range" in str(e), f"Expected 'out of range' in error message, got: {e}"
+    
+    # Way out of bounds should raise IndexError
+    try:
+        fastops.embedding_flat(data, 100, 2)
+        raise AssertionError("embedding_flat(100) should raise IndexError but succeeded")
+    except IndexError as e:
+        assert "out of range" in str(e), f"Expected 'out of range' in error message, got: {e}"
+
+    print("  PASS: C extension bounds checking correct")
+
+
 def test_training_basic():
     """Train for 5 steps with reference, verify loss is recorded."""
     rc, out, err = run([sys.executable, 'train.py', '--num-steps', '5'])
@@ -206,6 +258,7 @@ def main():
     tests = [
         ('C extension build',     test_c_extension_builds),
         ('C extension ops',       test_c_extension_ops),
+        ('C bounds checking',     test_c_extension_bounds_checking),
         ('Reference training',    test_training_basic),
         ('Fast training',         test_training_fast),
         ('Alternate config',      test_training_alternate_config),
