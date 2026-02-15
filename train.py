@@ -29,6 +29,17 @@ try:
 except ImportError:
     _archive_run = None
 
+# Model/Optimizer Constants (grouped for visibility and documentation)
+# These are architectural choices and numerical stability parameters that are typically fixed.
+# They can be modified here if needed for experimentation.
+
+WEIGHT_INIT_STD = 0.02        # Standard deviation for weight initialization (Gaussian)
+RMSNORM_EPS = 1e-5            # RMSNorm epsilon for numerical stability
+MLP_HIDDEN_DIM_MULTIPLIER = 4 # MLP hidden dimension as a multiple of n_embd (standard is 4x)
+ADAM_BETA1 = 0.9              # Adam optimizer momentum parameter (first moment)
+ADAM_BETA2 = 0.95             # Adam optimizer momentum parameter (second moment)
+ADAM_EPS = 1e-8               # Adam epsilon for numerical stability
+
 # CLI arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('--n-embd', type=int, default=16, help='Number of channels in the Transformer')
@@ -39,6 +50,8 @@ parser.add_argument('--n-head', type=int, default=4, help='Number of attention h
 parser.add_argument('--learning-rate', type=float, default=1e-2, help='Learning rate')
 parser.add_argument('--grad-clip', type=float, default=0.0, help='Max gradient norm (0 = disabled)')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
+parser.add_argument('--temperature', type=float, default=0.5, help='Sampling temperature for inference (0, 1]; lower = less random')
+parser.add_argument('--num-samples', type=int, default=20, help='Number of samples to generate during inference')
 parser.add_argument('--no-archive', action='store_true', help='Skip auto-archive to runs/')
 parser.add_argument('--val-split', type=float, default=0.0, help='Fraction of data for validation (0 = no validation)')
 parser.add_argument('--val-every', type=int, default=50, help='Evaluate validation loss every N steps')
@@ -160,7 +173,7 @@ class Param:
     """ a 2D weight matrix with gradient and Adam optimizer state """
     __slots__ = ('data', 'grad', 'm', 'v', 'nout', 'nin')
 
-    def __init__(self, nout, nin, std=0.02):
+    def __init__(self, nout, nin, std=WEIGHT_INIT_STD):
         self.nout, self.nin = nout, nin
         self.data = [_DA('d', [random.gauss(0, std) for _ in range(nin)]) for _ in range(nout)]
         self.grad = [_DA('d', bytes(nin * 8)) for _ in range(nout)]
@@ -179,8 +192,8 @@ for i in range(n_layer):
     state_dict[f'layer{i}.attn_wk'] = Param(n_embd, n_embd)
     state_dict[f'layer{i}.attn_wv'] = Param(n_embd, n_embd)
     state_dict[f'layer{i}.attn_wo'] = Param(n_embd, n_embd, std=0)
-    state_dict[f'layer{i}.mlp_fc1'] = Param(4 * n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc2'] = Param(n_embd, 4 * n_embd, std=0)
+    state_dict[f'layer{i}.mlp_fc1'] = Param(MLP_HIDDEN_DIM_MULTIPLIER * n_embd, n_embd)
+    state_dict[f'layer{i}.mlp_fc2'] = Param(n_embd, MLP_HIDDEN_DIM_MULTIPLIER * n_embd, std=0)
 params = list(state_dict.values())
 num_params = sum(len(p.data) * len(p.data[0]) for p in params)
 print(f"num params: {num_params}")
@@ -300,7 +313,7 @@ def rmsnorm(x: Tensor) -> Tensor:
     xd = x.data
     n = len(xd)
     ms = sum(xi * xi for xi in xd) / n
-    scale = (ms + 1e-5) ** -0.5
+    scale = (ms + RMSNORM_EPS) ** -0.5
     out_data = [xi * scale for xi in xd]
     out = Tensor(out_data, (x,))
     def _backward():
@@ -636,7 +649,7 @@ def gpt_inference(token_id: int, pos_id: int, keys: list[list],
     x = [t + p for t, p in zip(sd['wte'].data[token_id], sd['wpe'].data[pos_id])]
     def _rmsnorm(x):
         ms = sum(xi * xi for xi in x) / len(x)
-        return [xi * (ms + 1e-5) ** -0.5 for xi in x]
+        return [xi * (ms + RMSNORM_EPS) ** -0.5 for xi in x]
     _linear = lambda x, w: [sum(wi[j] * x[j] for j in range(len(x))) for wi in w.data]
     _sqrelu = lambda x: [max(0.0, xi)**2 for xi in x]
     x = _rmsnorm(x)
@@ -671,7 +684,7 @@ def gpt_inference(token_id: int, pos_id: int, keys: list[list],
 
 # Adam optimizer
 learning_rate = args.learning_rate
-beta1, beta2, eps_adam = 0.9, 0.95, 1e-8
+beta1, beta2, eps_adam = ADAM_BETA1, ADAM_BETA2, ADAM_EPS
 
 # Validation evaluation function
 def evaluate_validation():
@@ -774,11 +787,11 @@ for step in range(args.num_steps):
 print(f"mean loss last 50 steps: {sum(lossf_history[-50:]) / len(lossf_history[-50:]):.4f}") # ~usable for basic kwarg tuning
 print(f"training time: {time.perf_counter() - t_start:.2f}s") # ~usable for basic performance benchmarking
 
-# Inference: generate 20 samples (no autograd)
-temperature = 0.5 # number in (0, 1] that controls the "creativity" of generated text, low to high
+# Inference: generate samples (no autograd)
+temperature = args.temperature
 generated_samples = []
 print("\n--- inference ---")
-for sample_idx in range(20):
+for sample_idx in range(args.num_samples):
     keys_cache, values_cache = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
     token_id = BOS
     sample_chars = []
