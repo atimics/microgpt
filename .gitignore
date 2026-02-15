@@ -10,4 +10,3 @@ build/*
 *.egg-info/
 __pycache__/
 charts/
-runs/*_training.json
