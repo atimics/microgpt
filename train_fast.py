@@ -117,7 +117,7 @@ print(f"num params: {num_params}")
 
 # Fused operations using flat C functions
 
-def embedding(param, idx):
+def embedding(param: FlatParam, idx: int) -> Tensor:
     out = Tensor(_C.embedding_flat(param.data, idx, param.nin))
     def _backward():
         # Accumulate gradient into the correct row of the flat grad buffer
@@ -129,7 +129,7 @@ def embedding(param, idx):
     out._backward = _backward
     return out
 
-def linear(x, w):
+def linear(x: Tensor, w: FlatParam) -> Tensor:
     n_out, n_in = w.nout, w.nin
     out_data = _C.matvec_flat(w.data, x.data, n_out, n_in)
     out = Tensor(out_data, (x,))
@@ -139,7 +139,7 @@ def linear(x, w):
     out._backward = _backward
     return out
 
-def rmsnorm(x):
+def rmsnorm(x: Tensor) -> Tensor:
     xd = x.data
     out_data, scale = _C.rmsnorm_forward(xd)
     out = Tensor(out_data, (x,))
@@ -148,7 +148,7 @@ def rmsnorm(x):
     out._backward = _backward
     return out
 
-def tensor_add(a, b):
+def tensor_add(a: Tensor, b: Tensor) -> Tensor:
     out_data = _C.tensor_add(a.data, b.data)
     out = Tensor(out_data, (a, b))
     def _backward():
@@ -156,7 +156,7 @@ def tensor_add(a, b):
     out._backward = _backward
     return out
 
-def squared_relu(x):
+def squared_relu(x: Tensor) -> Tensor:
     xd = x.data
     out_data = _C.squared_relu_forward(xd)
     out = Tensor(out_data, (x,))
@@ -165,7 +165,8 @@ def squared_relu(x):
     out._backward = _backward
     return out
 
-def attention(q, keys, values, n_head, head_dim):
+def attention(q: Tensor, keys: list[Tensor], values: list[Tensor],
+              n_head: int, head_dim: int) -> Tensor:
     T = len(keys)
     children = (q,) + tuple(keys) + tuple(values)
     k_data = [k.data for k in keys]
@@ -183,7 +184,7 @@ def attention(q, keys, values, n_head, head_dim):
     out._backward = _backward
     return out
 
-def cross_entropy(logits, target):
+def cross_entropy(logits: Tensor, target: int) -> Tensor:
     loss, probs = _C.cross_entropy_forward(logits.data, target)
     out = Tensor([loss], (logits,))
     def _backward():
@@ -191,7 +192,7 @@ def cross_entropy(logits, target):
     out._backward = _backward
     return out
 
-def mean_loss(losses):
+def mean_loss(losses: list[Tensor]) -> Tensor:
     n = len(losses)
     avg = sum(l.data[0] for l in losses) / n
     out = Tensor([avg], tuple(losses))
@@ -203,7 +204,8 @@ def mean_loss(losses):
     return out
 
 # Model architecture (training: builds autograd graph)
-def gpt(token_id, pos_id, keys, values):
+def gpt(token_id: int, pos_id: int, keys: list[list[Tensor]], 
+        values: list[list[Tensor]]) -> Tensor:
     tok_emb = embedding(state_dict['wte'], token_id)
     pos_emb = embedding(state_dict['wpe'], pos_id)
     x = tensor_add(tok_emb, pos_emb)
@@ -227,7 +229,8 @@ def gpt(token_id, pos_id, keys, values):
     return linear(x, state_dict['lm_head'])
 
 # Model architecture (inference: plain floats, no autograd overhead)
-def gpt_inference(token_id, pos_id, keys, values):
+def gpt_inference(token_id: int, pos_id: int, keys: list[list], 
+                  values: list[list]) -> _array.array:
     sd = state_dict
     x = _C.tensor_add(
         _C.embedding_flat(sd['wte'].data, token_id, n_embd),
