@@ -28,6 +28,8 @@ import argparse
 
 def get_cpu_info():
     """Detect CPU model, frequency, and estimate peak FLOPS + memory bandwidth."""
+    import platform
+    
     info = {
         'model': 'Unknown',
         'cores': os.cpu_count() or 1,
@@ -40,6 +42,35 @@ def get_cpu_info():
         'l3_kb': 32768,
     }
 
+    system = platform.system()
+    
+    if system == 'Linux':
+        _detect_cpu_linux(info)
+    elif system == 'Darwin':  # macOS
+        _detect_cpu_macos(info)
+    elif system == 'Windows':
+        _detect_cpu_windows(info)
+
+    # Peak GFLOPS (single-thread, double-precision):
+    #   FMA: 2 ops/instruction (mul + add)
+    #   AVX2: 256-bit = 4 doubles per vector
+    #   Modern AMD/Intel: 2 FMA units
+    #   = 2 units * 2 ops * 4 doubles = 16 FLOP/cycle
+    if info['has_fma'] and info['has_avx2']:
+        flops_per_cycle = 16
+    elif info['has_avx2']:
+        flops_per_cycle = 8
+    else:
+        flops_per_cycle = 4  # SSE2
+
+    info['flops_per_cycle'] = flops_per_cycle
+    info['peak_gflops'] = info['freq_ghz'] * flops_per_cycle
+
+    return info
+
+
+def _detect_cpu_linux(info):
+    """Linux CPU detection using lscpu."""
     try:
         out = subprocess.check_output(['lscpu'], text=True, stderr=subprocess.DEVNULL)
         for line in out.split('\n'):
@@ -68,22 +99,80 @@ def get_cpu_info():
     except Exception:
         pass
 
-    # Peak GFLOPS (single-thread, double-precision):
-    #   FMA: 2 ops/instruction (mul + add)
-    #   AVX2: 256-bit = 4 doubles per vector
-    #   Modern AMD/Intel: 2 FMA units
-    #   = 2 units * 2 ops * 4 doubles = 16 FLOP/cycle
-    if info['has_fma'] and info['has_avx2']:
-        flops_per_cycle = 16
-    elif info['has_avx2']:
-        flops_per_cycle = 8
-    else:
-        flops_per_cycle = 4  # SSE2
 
-    info['flops_per_cycle'] = flops_per_cycle
-    info['peak_gflops'] = info['freq_ghz'] * flops_per_cycle
+def _detect_cpu_macos(info):
+    """macOS CPU detection using sysctl."""
+    try:
+        # Get CPU brand string
+        out = subprocess.check_output(['sysctl', '-n', 'machdep.cpu.brand_string'], 
+                                     text=True, stderr=subprocess.DEVNULL)
+        info['model'] = out.strip()
+    except Exception:
+        pass
+    
+    try:
+        # Get CPU frequency (in Hz, convert to GHz)
+        out = subprocess.check_output(['sysctl', '-n', 'hw.cpufrequency'], 
+                                     text=True, stderr=subprocess.DEVNULL)
+        info['freq_ghz'] = float(out.strip()) / 1e9
+    except Exception:
+        # Try alternative frequency detection
+        try:
+            out = subprocess.check_output(['sysctl', '-n', 'hw.cpufrequency_max'], 
+                                         text=True, stderr=subprocess.DEVNULL)
+            info['freq_ghz'] = float(out.strip()) / 1e9
+        except Exception:
+            pass
+    
+    try:
+        # Check for CPU features
+        features = subprocess.check_output(['sysctl', '-n', 'machdep.cpu.features'], 
+                                          text=True, stderr=subprocess.DEVNULL).lower()
+        leaf7_features = ''
+        try:
+            leaf7_features = subprocess.check_output(['sysctl', '-n', 'machdep.cpu.leaf7_features'], 
+                                                    text=True, stderr=subprocess.DEVNULL).lower()
+        except Exception:
+            pass
+        
+        combined_features = features + ' ' + leaf7_features
+        info['has_avx2'] = 'avx2' in combined_features
+        info['has_avx512'] = 'avx512' in combined_features
+        info['has_fma'] = 'fma' in combined_features
+    except Exception:
+        pass
 
-    return info
+
+def _detect_cpu_windows(info):
+    """Windows CPU detection using wmic."""
+    try:
+        # Get CPU name
+        out = subprocess.check_output(['wmic', 'cpu', 'get', 'name'], 
+                                     text=True, stderr=subprocess.DEVNULL)
+        lines = [l.strip() for l in out.split('\n') if l.strip() and l.strip() != 'Name']
+        if lines:
+            info['model'] = lines[0]
+    except Exception:
+        pass
+    
+    try:
+        # Get max clock speed (in MHz)
+        out = subprocess.check_output(['wmic', 'cpu', 'get', 'maxclockspeed'], 
+                                     text=True, stderr=subprocess.DEVNULL)
+        lines = [l.strip() for l in out.split('\n') if l.strip() and l.strip() != 'MaxClockSpeed']
+        if lines:
+            info['freq_ghz'] = float(lines[0]) / 1000
+    except Exception:
+        pass
+    
+    # Windows doesn't have easy CPU feature detection via command line
+    # Features are typically detected at runtime by the application
+    # For now, we'll assume modern x86_64 CPUs have AVX2/FMA (conservative estimate)
+    import platform as plat
+    if plat.machine().lower() in ('amd64', 'x86_64'):
+        # Most modern x86_64 CPUs have these features, but we'll be conservative
+        # and leave them as False unless we can verify
+        pass
 
 
 # ---------------------------------------------------------------------------
