@@ -332,12 +332,28 @@ def test_validation_negative_n_embd():
     print("  PASS: negative n_embd rejected")
 
 
+def test_validation_zero_n_embd():
+    """Verify zero n_embd is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-embd', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero n_embd"
+    assert "n_embd must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero n_embd rejected")
+
+
 def test_validation_negative_n_layer():
     """Verify negative n_layer is rejected."""
     rc, out, err = run([sys.executable, 'train.py', '--n-layer', '-1', '--num-steps', '1'])
     assert rc != 0, "train.py should fail with negative n_layer"
     assert "n_layer must be positive" in err, f"Expected validation error in:\n{err}"
     print("  PASS: negative n_layer rejected")
+
+
+def test_validation_zero_n_layer():
+    """Verify zero n_layer is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-layer', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero n_layer"
+    assert "n_layer must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero n_layer rejected")
 
 
 def test_validation_negative_n_head():
@@ -348,12 +364,28 @@ def test_validation_negative_n_head():
     print("  PASS: negative n_head rejected")
 
 
+def test_validation_zero_n_head():
+    """Verify zero n_head is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-head', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero n_head"
+    assert "n_head must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero n_head rejected")
+
+
 def test_validation_negative_block_size():
     """Verify negative block_size is rejected."""
     rc, out, err = run([sys.executable, 'train.py', '--block-size', '-1', '--num-steps', '1'])
     assert rc != 0, "train.py should fail with negative block_size"
     assert "block_size must be positive" in err, f"Expected validation error in:\n{err}"
     print("  PASS: negative block_size rejected")
+
+
+def test_validation_zero_block_size():
+    """Verify zero block_size is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--block-size', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero block_size"
+    assert "block_size must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero block_size rejected")
 
 
 def test_validation_negative_num_steps():
@@ -364,12 +396,28 @@ def test_validation_negative_num_steps():
     print("  PASS: negative num_steps rejected")
 
 
+def test_validation_zero_num_steps():
+    """Verify zero num_steps is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--num-steps', '0'])
+    assert rc != 0, "train.py should fail with zero num_steps"
+    assert "num_steps must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero num_steps rejected")
+
+
 def test_validation_negative_learning_rate():
     """Verify negative learning_rate is rejected."""
     rc, out, err = run([sys.executable, 'train.py', '--learning-rate', '-0.1', '--num-steps', '1'])
     assert rc != 0, "train.py should fail with negative learning_rate"
     assert "learning_rate must be positive" in err, f"Expected validation error in:\n{err}"
     print("  PASS: negative learning_rate rejected")
+
+
+def test_validation_zero_learning_rate():
+    """Verify zero learning_rate is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--learning-rate', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero learning_rate"
+    assert "learning_rate must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero learning_rate rejected")
 
 
 def test_validation_n_embd_not_divisible():
@@ -410,11 +458,17 @@ def main():
         ('Ref/fast equivalence',  test_equivalence),
         ('Empty dataset handling', test_empty_dataset_handling),
         ('Validation: negative n_embd', test_validation_negative_n_embd),
+        ('Validation: zero n_embd', test_validation_zero_n_embd),
         ('Validation: negative n_layer', test_validation_negative_n_layer),
+        ('Validation: zero n_layer', test_validation_zero_n_layer),
         ('Validation: negative n_head', test_validation_negative_n_head),
+        ('Validation: zero n_head', test_validation_zero_n_head),
         ('Validation: negative block_size', test_validation_negative_block_size),
+        ('Validation: zero block_size', test_validation_zero_block_size),
         ('Validation: negative num_steps', test_validation_negative_num_steps),
+        ('Validation: zero num_steps', test_validation_zero_num_steps),
         ('Validation: negative learning_rate', test_validation_negative_learning_rate),
+        ('Validation: zero learning_rate', test_validation_zero_learning_rate),
         ('Validation: n_embd divisibility', test_validation_n_embd_not_divisible),
         ('Validation: fast path', test_validation_fast_path),
         ('Roofline analytical',   test_roofline_analytical),
