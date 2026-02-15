@@ -13,28 +13,28 @@
     "peak_gflops": 39.12688
   },
   "bandwidth": {
-    "python_gbs": 2.005093715009993,
-    "raw_gbs": 2.1708483774427614,
+    "python_gbs": 2.012275458828155,
+    "raw_gbs": 2.317090636272888,
     "cache_hierarchy": [
       {
         "level": "L1  (16 KB)",
         "size_bytes": 16384,
-        "bandwidth_gbs": 36.906353962560516
+        "bandwidth_gbs": 35.03778286801763
       },
       {
         "level": "L2  (256 KB)",
         "size_bytes": 262144,
-        "bandwidth_gbs": 24.294899131000218
+        "bandwidth_gbs": 41.60388045419767
       },
       {
         "level": "L3  (8 MB)",
         "size_bytes": 8388608,
-        "bandwidth_gbs": 31.01806485875888
+        "bandwidth_gbs": 26.718088325595062
       },
       {
         "level": "DRAM (64 MB)",
         "size_bytes": 67108864,
-        "bandwidth_gbs": 2.1708483774427614
+        "bandwidth_gbs": 2.317090636272888
       }
     ]
   },
@@ -66,7 +66,7 @@
       "oi_python": 0.05285075042284882,
       "oi_c": 0.23782837690281972,
       "oi_f32": 0.47565675380563943,
-      "ridge_point": 18.023773749731472,
+      "ridge_point": 16.886210400011283,
       "pure_python": false,
       "step_time_ms": 0.5,
       "achieved_gflops": 0.473952,
@@ -100,7 +100,7 @@
       "oi_python": 0.05322081019059431,
       "oi_c": 0.2394936458576744,
       "oi_f32": 0.4789872917153488,
-      "ridge_point": 18.023773749731472,
+      "ridge_point": 16.886210400011283,
       "pure_python": false,
       "step_time_ms": 1.0,
       "achieved_gflops": 0.85272,
@@ -134,7 +134,7 @@
       "oi_python": 0.05348649968892559,
       "oi_c": 0.24068924860016516,
       "oi_f32": 0.4813784972003303,
-      "ridge_point": 18.023773749731472,
+      "ridge_point": 16.886210400011283,
       "pure_python": false,
       "step_time_ms": 1.5,
       "achieved_gflops": 2.151328,
@@ -168,7 +168,7 @@
       "oi_python": 0.054705944824318474,
       "oi_c": 0.24617675170943312,
       "oi_f32": 0.49235350341886625,
-      "ridge_point": 18.023773749731472,
+      "ridge_point": 16.886210400011283,
       "pure_python": false,
       "step_time_ms": 1.0,
       "achieved_gflops": 0.428576,
@@ -202,7 +202,7 @@
       "oi_python": 0.05322928760912857,
       "oi_c": 0.23953179424107857,
       "oi_f32": 0.47906358848215713,
-      "ridge_point": 18.023773749731472,
+      "ridge_point": 16.886210400011283,
       "pure_python": false,
       "step_time_ms": 1.5,
       "achieved_gflops": 1.0885653333333332,
@@ -236,7 +236,7 @@
       "oi_python": 0.054522736122689285,
       "oi_c": 0.24535231255210177,
       "oi_f32": 0.49070462510420354,
-      "ridge_point": 18.023773749731472,
+      "ridge_point": 16.886210400011283,
       "pure_python": false,
       "step_time_ms": 2.5,
       "achieved_gflops": 4.505664,
