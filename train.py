@@ -51,16 +51,17 @@ if not os.path.exists('input.txt'):
     import urllib.request
     import tempfile
     url = 'https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt'
+    tmp_path = None
     try:
         # Download to temporary file first for atomic operation
-        with tempfile.NamedTemporaryFile(mode='wb', delete=False, dir='.', prefix='.input_', suffix='.txt.tmp') as tmp_file:
-            tmp_path = tmp_file.name
+        fd, tmp_path = tempfile.mkstemp(dir='.', prefix='.input_', suffix='.txt.tmp')
+        os.close(fd)  # Close the file descriptor, we'll use the path with urlretrieve
         urllib.request.urlretrieve(url, tmp_path)
         # Atomic rename to final location
         os.replace(tmp_path, 'input.txt')
     except Exception as e:
         # Clean up temp file if it exists
-        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+        if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
         print(f"Error downloading dataset from {url}: {e}", file=sys.stderr)
         print("Please manually download the dataset and save it as 'input.txt', or provide your own text file.", file=sys.stderr)
