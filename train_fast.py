@@ -33,7 +33,22 @@ args = parser.parse_args()
 n_embd, block_size, n_layer, n_head = args.n_embd, args.block_size, args.n_layer, args.n_head
 if n_embd < n_head:
     parser.error(f"n_embd ({n_embd}) must be >= n_head ({n_head}) to avoid division by zero in attention")
-assert n_embd % n_head == 0, f"n_embd ({n_embd}) must be divisible by n_head ({n_head})"
+
+# Validate hyperparameter configurations
+if n_embd <= 0:
+    raise ValueError("n_embd must be positive")
+if n_layer <= 0:
+    raise ValueError("n_layer must be positive")
+if n_head <= 0:
+    raise ValueError("n_head must be positive")
+if block_size <= 0:
+    raise ValueError("block_size must be positive")
+if args.num_steps <= 0:
+    raise ValueError("num_steps must be positive")
+if args.learning_rate <= 0:
+    raise ValueError("learning_rate must be positive")
+if n_embd % n_head != 0:
+    raise ValueError(f"n_embd ({n_embd}) must be divisible by n_head ({n_head})")
 head_dim = n_embd // n_head
 random.seed(args.seed)
 

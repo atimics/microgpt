@@ -249,32 +249,23 @@ def test_roofline_all_configs():
 
 def test_validation_n_embd_divisibility():
     """Verify n_embd divisibility validation rejects invalid configs."""
-    # Test train.py with invalid config (16 % 5 != 0)
     rc, out, err = run([sys.executable, 'train.py', '--n-embd', '16', '--n-head', '5', '--num-steps', '1'])
     assert rc != 0, "train.py should fail with n_embd=16, n_head=5"
     assert 'n_embd (16) must be divisible by n_head (5)' in err, \
         f"Expected validation error message in stderr, got:\n{err}"
-
-    # Test train_fast.py with invalid config (16 % 5 != 0)
     rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '16', '--n-head', '5', '--num-steps', '1'])
     assert rc != 0, "train_fast.py should fail with n_embd=16, n_head=5"
     assert 'n_embd (16) must be divisible by n_head (5)' in err, \
         f"Expected validation error message in stderr, got:\n{err}"
-
-    # Test train.py with valid config (16 % 4 == 0)
     rc, out, err = run([sys.executable, 'train.py', '--n-embd', '16', '--n-head', '4', '--num-steps', '1'])
     assert rc == 0, f"train.py should succeed with n_embd=16, n_head=4:\n{err}"
-
-    # Test train_fast.py with valid config (32 % 8 == 0)
     rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '32', '--n-head', '8', '--num-steps', '1'])
     assert rc == 0, f"train_fast.py should succeed with n_embd=32, n_head=8:\n{err}"
-
     print("  PASS: n_embd divisibility validation")
 
 
 def test_validation_train():
     """Test that train.py validates n_embd >= n_head."""
-    # Should fail with n_embd < n_head
     rc, out, err = run([sys.executable, 'train.py', '--n-embd', '2', '--n-head', '4', '--num-steps', '1'])
     assert rc != 0, f"train.py should have failed with n_embd=2, n_head=4 (rc={rc})"
     assert "must be >= n_head" in err or "must be >= n_head" in out, \
@@ -289,8 +280,6 @@ def test_validation_train_fast():
     except ImportError:
         print("  SKIP: fastops not available")
         return
-
-    # Should fail with n_embd < n_head
     rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '2', '--n-head', '4', '--num-steps', '1'])
     assert rc != 0, f"train_fast.py should have failed with n_embd=2, n_head=4 (rc={rc})"
     assert "must be >= n_head" in err or "must be >= n_head" in out, \
@@ -300,7 +289,6 @@ def test_validation_train_fast():
 
 def test_validation_roofline():
     """Test that roofline.py handles invalid configs gracefully."""
-    # Should skip invalid config but not crash
     rc, out, err = run([sys.executable, 'roofline.py', '--n-embd', '2', '--n-head', '4', '--no-measure'])
     assert rc == 0 or "ERROR: Config" in out or "must be >= n_head" in out, \
         f"roofline.py should handle n_embd=2, n_head=4 gracefully (rc={rc}):\nstdout: {out}\nstderr: {err}"
@@ -312,39 +300,142 @@ def test_validation_roofline():
 
 def test_empty_dataset_handling():
     """Verify proper error handling for empty dataset."""
-    # Save current input.txt
     input_backup = None
     if os.path.exists('input.txt'):
         with open('input.txt', 'r') as f:
             input_backup = f.read()
-
     try:
-        # Create empty input.txt (only whitespace)
         with open('input.txt', 'w') as f:
             f.write('   \n\n  \n')
-
-        # Test train.py
         rc, out, err = run([sys.executable, 'train.py', '--num-steps', '1'])
         assert rc == 1, f"train.py should exit with code 1 for empty dataset, got {rc}"
         assert 'Error: input.txt contains no non-empty lines' in err, \
             f"Expected error message in stderr, got:\n{err}"
-
-        # Test train_fast.py
         rc, out, err = run([sys.executable, 'train_fast.py', '--num-steps', '1'])
         assert rc == 1, f"train_fast.py should exit with code 1 for empty dataset, got {rc}"
         assert 'Error: input.txt contains no non-empty lines' in err, \
             f"Expected error message in stderr, got:\n{err}"
-
         print("  PASS: empty dataset handling")
-
     finally:
-        # Restore input.txt
         if input_backup is not None:
             with open('input.txt', 'w') as f:
                 f.write(input_backup)
         elif os.path.exists('input.txt'):
             os.remove('input.txt')
 
+
+def test_validation_negative_n_embd():
+    """Verify negative n_embd is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-embd', '-1', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with negative n_embd"
+    assert "n_embd must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: negative n_embd rejected")
+
+
+def test_validation_zero_n_embd():
+    """Verify zero n_embd is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-embd', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero n_embd"
+    assert "n_embd must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero n_embd rejected")
+
+
+def test_validation_negative_n_layer():
+    """Verify negative n_layer is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-layer', '-1', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with negative n_layer"
+    assert "n_layer must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: negative n_layer rejected")
+
+
+def test_validation_zero_n_layer():
+    """Verify zero n_layer is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-layer', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero n_layer"
+    assert "n_layer must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero n_layer rejected")
+
+
+def test_validation_negative_n_head():
+    """Verify negative n_head is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-head', '-1', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with negative n_head"
+    assert "n_head must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: negative n_head rejected")
+
+
+def test_validation_zero_n_head():
+    """Verify zero n_head is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-head', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero n_head"
+    assert "n_head must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero n_head rejected")
+
+
+def test_validation_negative_block_size():
+    """Verify negative block_size is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--block-size', '-1', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with negative block_size"
+    assert "block_size must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: negative block_size rejected")
+
+
+def test_validation_zero_block_size():
+    """Verify zero block_size is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--block-size', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero block_size"
+    assert "block_size must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero block_size rejected")
+
+
+def test_validation_negative_num_steps():
+    """Verify negative num_steps is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--num-steps', '-1'])
+    assert rc != 0, "train.py should fail with negative num_steps"
+    assert "num_steps must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: negative num_steps rejected")
+
+
+def test_validation_zero_num_steps():
+    """Verify zero num_steps is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--num-steps', '0'])
+    assert rc != 0, "train.py should fail with zero num_steps"
+    assert "num_steps must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero num_steps rejected")
+
+
+def test_validation_negative_learning_rate():
+    """Verify negative learning_rate is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--learning-rate', '-0.1', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with negative learning_rate"
+    assert "learning_rate must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: negative learning_rate rejected")
+
+
+def test_validation_zero_learning_rate():
+    """Verify zero learning_rate is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--learning-rate', '0', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail with zero learning_rate"
+    assert "learning_rate must be positive" in err, f"Expected validation error in:\n{err}"
+    print("  PASS: zero learning_rate rejected")
+
+
+def test_validation_n_embd_not_divisible():
+    """Verify n_embd not divisible by n_head is rejected."""
+    rc, out, err = run([sys.executable, 'train.py', '--n-embd', '17', '--n-head', '4', '--num-steps', '1'])
+    assert rc != 0, "train.py should fail when n_embd not divisible by n_head"
+    assert "n_embd" in err and "must be divisible by" in err and "n_head" in err, \
+        f"Expected divisibility validation error in:\n{err}"
+    print("  PASS: n_embd not divisible by n_head rejected")
+
+
+def test_validation_fast_path():
+    """Verify validation works in train_fast.py as well."""
+    rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '17', '--n-head', '4', '--num-steps', '1'])
+    assert rc != 0, "train_fast.py should fail when n_embd not divisible by n_head"
+    assert "n_embd" in err and "must be divisible by" in err and "n_head" in err, \
+        f"Expected divisibility validation error in:\n{err}"
+    print("  PASS: validation works in train_fast.py")
 
 
 def main():
@@ -366,6 +457,20 @@ def main():
         ('Loss decreases',        test_training_loss_decreases),
         ('Ref/fast equivalence',  test_equivalence),
         ('Empty dataset handling', test_empty_dataset_handling),
+        ('Validation: negative n_embd', test_validation_negative_n_embd),
+        ('Validation: zero n_embd', test_validation_zero_n_embd),
+        ('Validation: negative n_layer', test_validation_negative_n_layer),
+        ('Validation: zero n_layer', test_validation_zero_n_layer),
+        ('Validation: negative n_head', test_validation_negative_n_head),
+        ('Validation: zero n_head', test_validation_zero_n_head),
+        ('Validation: negative block_size', test_validation_negative_block_size),
+        ('Validation: zero block_size', test_validation_zero_block_size),
+        ('Validation: negative num_steps', test_validation_negative_num_steps),
+        ('Validation: zero num_steps', test_validation_zero_num_steps),
+        ('Validation: negative learning_rate', test_validation_negative_learning_rate),
+        ('Validation: zero learning_rate', test_validation_zero_learning_rate),
+        ('Validation: n_embd divisibility', test_validation_n_embd_not_divisible),
+        ('Validation: fast path', test_validation_fast_path),
         ('Roofline analytical',   test_roofline_analytical),
         ('Roofline all-configs',  test_roofline_all_configs),
         ('Validation train.py',   test_validation_train),
