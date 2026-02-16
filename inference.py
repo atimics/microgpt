@@ -34,6 +34,10 @@ parser.add_argument('--stream', action='store_true', help='Stream output: print 
 parser.add_argument('--seed', type=int, default=None, help='Random seed for reproducibility')
 args = parser.parse_args()
 
+# Validate temperature
+if args.temperature <= 0 or args.temperature > 1:
+    parser.error(f"temperature must be in range (0, 1], got {args.temperature}")
+
 if args.seed is not None:
     random.seed(args.seed)
 
