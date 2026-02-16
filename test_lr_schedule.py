@@ -6,9 +6,6 @@ Test learning rate schedules (linear, cosine, warmup).
 import subprocess
 import sys
 import json
-import math
-
-
 def run(cmd, **kwargs):
     """Run a command and return (returncode, stdout, stderr)."""
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=300, **kwargs)
