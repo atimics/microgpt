@@ -1,0 +1,92 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 25,
+    "learning_rate": 0.01,
+    "val_split": 0.15,
+    "val_every": 10,
+    "early_stop_patience": 0
+  },
+  "num_params": 4064,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "num_train_docs": 27229,
+  "num_val_docs": 4804,
+  "loss_history": [
+    3.3281959305606965,
+    3.2772357295145427,
+    3.2781060843892673,
+    3.233987668385316,
+    3.152140044905626,
+    3.150771057244056,
+    3.0583713970529227,
+    3.101861918468252,
+    3.1147376163295273,
+    3.0977966117308973,
+    2.9944077621574636,
+    3.1188758284525457,
+    3.098422958895827,
+    3.140363110064069,
+    3.1563035489948734,
+    2.890420662061465,
+    2.7847457723718714,
+    2.765564151645406,
+    2.862165320633519,
+    3.130032274781732,
+    2.686344206049428,
+    3.3620849817831333,
+    2.7141920811638585,
+    2.6382829936049057,
+    3.0609199148313353
+  ],
+  "val_loss_history": [
+    3.0824666699485164,
+    2.881290782618835
+  ],
+  "loss_final": 3.0609199148313353,
+  "loss_mean_last_50": 3.047853185042902,
+  "training_time_seconds": 22.1804,
+  "generated_samples": [
+    "",
+    "colsa",
+    "kine",
+    "",
+    "ki",
+    "kqon",
+    "",
+    "",
+    "",
+    "",
+    "ri",
+    "eaaie",
+    "qar",
+    "r",
+    "",
+    "ci",
+    "kiok",
+    "c",
+    "e",
+    "r"
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-16T01:21:37.357570+00:00",
+    "timestamp_local": "20260216_012137",
+    "machine": {
+      "machine_id": "5b118459eb2b",
+      "hostname": "runnervmjduv7",
+      "platform": "Linux-6.14.0-1017-azure-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    },
+    "git": {
+      "commit": "e01cd3d264038f628f8a122509af258122c8faeb",
+      "commit_short": "e01cd3d2",
+      "branch": "copilot/add-train-validation-split",
+      "dirty": false
+    }
+  }
+}
