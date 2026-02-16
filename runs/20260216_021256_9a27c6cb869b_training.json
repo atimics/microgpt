@@ -1,0 +1,63 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 5,
+    "learning_rate": 0.01
+  },
+  "num_params": 4064,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "loss_history": [
+    3.262669756552358,
+    3.300263772564401,
+    3.211970377999541,
+    3.31523745614511,
+    3.316560000101607
+  ],
+  "loss_final": 3.316560000101607,
+  "loss_mean_last_50": 3.2813402726726033,
+  "training_time_seconds": 0.0907,
+  "generated_samples": [
+    "skhufr",
+    "nuhnxe",
+    "ynmxremq",
+    "kuwhzdbk",
+    "gqirola",
+    "ckpvldoi",
+    "oavdrher",
+    "yl",
+    "gqelhexh",
+    "ypjhckdo",
+    "lhe",
+    "viyhvzyx",
+    "huvnccnl",
+    "orepyyxs",
+    "fxlulwed",
+    "hojgwmcz",
+    "jliirgww",
+    "rupntfxq",
+    "rcmwyprn",
+    ""
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-16T02:12:56.541761+00:00",
+    "timestamp_local": "20260216_021256",
+    "machine": {
+      "machine_id": "9a27c6cb869b",
+      "hostname": "runsc",
+      "platform": "Linux-4.4.0-x86_64-with-glibc2.39",
+      "python": "3.11.14"
+    },
+    "git": {
+      "commit": "59246e5a39b645d20bba8407c0b67bcf7144f009",
+      "commit_short": "59246e5a",
+      "branch": "claude/fix-tests-update-docs-EAAt0",
+      "dirty": true
+    }
+  }
+}
