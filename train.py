@@ -750,7 +750,8 @@ for step in range(args.num_steps):
     # Adam update (optimizer)
     # Compute learning rate with schedule and warmup
     if step < args.warmup_steps:
-        # Linear warmup
+        # Linear warmup: ramps from lr/warmup_steps to lr
+        # Using (step + 1) to avoid zero learning rate at step 0
         lr_t = learning_rate * (step + 1) / args.warmup_steps
     elif args.lr_schedule == 'cosine':
         # Cosine annealing after warmup
