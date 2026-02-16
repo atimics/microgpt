@@ -49,6 +49,8 @@ parser.add_argument('--num-steps', type=int, default=500, help='Number of traini
 parser.add_argument('--n-head', type=int, default=4, help='Number of attention heads in the Transformer')
 parser.add_argument('--learning-rate', type=float, default=1e-2, help='Learning rate')
 parser.add_argument('--grad-clip', type=float, default=0.0, help='Max gradient norm (0 = disabled)')
+parser.add_argument('--lr-schedule', type=str, default='linear', choices=['linear', 'cosine'], help='Learning rate schedule')
+parser.add_argument('--warmup-steps', type=int, default=0, help='Number of warmup steps')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
 parser.add_argument('--temperature', type=float, default=0.5, help='Sampling temperature for inference; typical range (0, 1], lower = less random')
 parser.add_argument('--num-samples', type=int, default=20, help='Number of samples to generate during inference')
@@ -744,7 +746,18 @@ for step in range(args.num_steps):
                         row[j] *= scale
 
     # Adam update (optimizer)
-    lr_t = learning_rate * (1 - step / args.num_steps)
+    # Compute learning rate with schedule and warmup
+    if step < args.warmup_steps:
+        # Linear warmup
+        lr_t = learning_rate * (step + 1) / args.warmup_steps
+    elif args.lr_schedule == 'cosine':
+        # Cosine annealing after warmup
+        progress = (step - args.warmup_steps) / (args.num_steps - args.warmup_steps)
+        lr_t = learning_rate * 0.5 * (1 + math.cos(math.pi * progress))
+    else:  # linear
+        # Linear decay after warmup
+        progress = (step - args.warmup_steps) / (args.num_steps - args.warmup_steps)
+        lr_t = learning_rate * (1 - progress)
     bc1 = 1.0 - beta1 ** (step + 1)
     bc2 = 1.0 - beta2 ** (step + 1)
     one_m_b1 = 1.0 - beta1
