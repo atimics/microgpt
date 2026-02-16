@@ -12,6 +12,7 @@ import random   # for random.seed, random.choices
 import json     # for json.dump
 import argparse # for argparse.ArgumentParser
 import array as _array  # for contiguous double arrays
+import glob     # for glob.glob
 _DA = _array.array      # shorthand for array.array constructor
 
 import fastops as _C
@@ -47,6 +48,8 @@ parser.add_argument('--early-stop-patience', type=int, default=0, help='Stop aft
 parser.add_argument('--save-model', type=str, default=None, help='Path to save the trained model (JSON format)')
 parser.add_argument('--load-model', type=str, default=None, help='Path to load a trained model from (JSON format)')
 parser.add_argument('--inference-only', action='store_true', help='Skip training, only run inference (requires --load-model)')
+parser.add_argument('--data', type=str, action='append', help='Text file(s) or glob pattern(s) to load (can be specified multiple times)')
+parser.add_argument('--data-dir', type=str, help='Directory containing text files to load')
 args = parser.parse_args()
 if args.inference_only and not args.load_model:
     parser.error("--inference-only requires --load-model")
@@ -76,31 +79,86 @@ if args.warmup_steps >= args.num_steps:
 head_dim = n_embd // n_head
 random.seed(args.seed)
 
-# Dataset example: the names dataset (one name per line). rest of the code just assumes docs: list[str]
-if not os.path.exists('input.txt'):
-    import urllib.request
-    import tempfile
-    url = 'https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt'
-    tmp_path = None
-    try:
-        # Download to temporary file first for atomic operation
-        fd, tmp_path = tempfile.mkstemp(dir='.', prefix='.input_', suffix='.txt.tmp')
-        os.close(fd)  # Close the file descriptor, we'll use the path with urlretrieve
-        urllib.request.urlretrieve(url, tmp_path)
-        # Atomic rename to final location
-        os.replace(tmp_path, 'input.txt')
-    except Exception as e:
-        # Clean up temp file if it exists
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
-        print(f"Error downloading dataset from {url}: {e}", file=sys.stderr)
-        print("Please manually download the dataset and save it as 'input.txt', or provide your own text file.", file=sys.stderr)
+random.seed(args.seed)
+
+# Dataset loading: supports single file (backward compatible), multiple files, glob patterns, and directories
+def load_dataset_from_sources(data_args, data_dir_arg):
+    """Load documents from multiple sources: files, glob patterns, or directory.
+    
+    Args:
+        data_args: List of file paths or glob patterns (from --data)
+        data_dir_arg: Directory path (from --data-dir)
+    
+    Returns:
+        List of text documents (one per line from all files)
+    """
+    import glob as glob_module
+    
+    all_files = []
+    
+    # Collect files from --data arguments (supports glob patterns)
+    if data_args:
+        for pattern in data_args:
+            # Try glob expansion
+            matches = glob_module.glob(pattern)
+            if matches:
+                all_files.extend(matches)
+            elif os.path.exists(pattern):
+                # Direct file path (no glob match needed)
+                all_files.append(pattern)
+            else:
+                print(f"Warning: --data pattern '{pattern}' matched no files", file=sys.stderr)
+    
+    # Collect files from --data-dir
+    if data_dir_arg:
+        if not os.path.isdir(data_dir_arg):
+            print(f"Error: --data-dir '{data_dir_arg}' is not a directory", file=sys.stderr)
+            sys.exit(1)
+        # Find all .txt files in the directory (not recursive)
+        dir_files = glob_module.glob(os.path.join(data_dir_arg, '*.txt'))
+        all_files.extend(dir_files)
+    
+    # Backward compatibility: if no --data or --data-dir specified, use input.txt
+    if not all_files:
+        if not os.path.exists('input.txt'):
+            import urllib.request
+            import tempfile
+            url = 'https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt'
+            tmp_path = None
+            try:
+                # Download to temporary file first for atomic operation
+                fd, tmp_path = tempfile.mkstemp(dir='.', prefix='.input_', suffix='.txt.tmp')
+                os.close(fd)  # Close the file descriptor, we'll use the path with urlretrieve
+                urllib.request.urlretrieve(url, tmp_path)
+                # Atomic rename to final location
+                os.replace(tmp_path, 'input.txt')
+            except Exception as e:
+                # Clean up temp file if it exists
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                print(f"Error downloading dataset from {url}: {e}", file=sys.stderr)
+                print("Please manually download the dataset and save it as 'input.txt', or provide your own text file.", file=sys.stderr)
+                sys.exit(1)
+        all_files = ['input.txt']
+    
+    # Load and concatenate all documents from all files
+    docs = []
+    for filepath in all_files:
+        try:
+            with open(filepath) as f:
+                file_docs = [l.strip() for l in f.read().strip().split('\n') if l.strip()]
+                docs.extend(file_docs)
+        except Exception as e:
+            print(f"Error reading file '{filepath}': {e}", file=sys.stderr)
+            sys.exit(1)
+    
+    if not docs:
+        print("Error: No documents loaded from data sources", file=sys.stderr)
         sys.exit(1)
-with open('input.txt') as f:
-    docs = [l.strip() for l in f.read().strip().split('\n') if l.strip()] # list[str] of documents
-if not docs:
-    print("Error: input.txt contains no non-empty lines", file=sys.stderr)
-    sys.exit(1)
+
+    return docs
+
+docs = load_dataset_from_sources(args.data, args.data_dir)
 random.shuffle(docs)
 # Split into train and validation sets (deterministic with seed)
 if args.val_split > 0.0:
