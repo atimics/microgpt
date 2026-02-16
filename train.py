@@ -73,6 +73,9 @@ if not os.path.exists('input.txt'):
         sys.exit(1)
 with open('input.txt') as f:
     docs = [l.strip() for l in f.read().strip().split('\n') if l.strip()] # list[str] of documents
+if not docs:
+    print("Error: input.txt contains no non-empty lines", file=sys.stderr)
+    sys.exit(1)
 random.shuffle(docs)
 # Split into train and validation sets (deterministic with seed)
 if args.val_split > 0.0:

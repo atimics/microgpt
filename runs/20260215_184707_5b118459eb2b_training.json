@@ -1,0 +1,59 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 1,
+    "learning_rate": 0.01
+  },
+  "num_params": 3328,
+  "vocab_size": 4,
+  "num_docs": 1,
+  "loss_history": [
+    1.372300870538126
+  ],
+  "loss_final": 1.372300870538126,
+  "loss_mean_last_50": 1.372300870538126,
+  "training_time_seconds": 0.0296,
+  "generated_samples": [
+    " ",
+    " n",
+    "\\n",
+    "\\ ",
+    " \\",
+    "n  \\\\ nn",
+    " n ",
+    "nn  \\",
+    "\\n",
+    " \\",
+    "n  ",
+    "n\\\\",
+    "\\\\  \\",
+    "\\n \\\\ \\",
+    "n",
+    "\\",
+    "",
+    "",
+    "",
+    ""
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-15T18:47:07.406860+00:00",
+    "timestamp_local": "20260215_184707",
+    "machine": {
+      "machine_id": "5b118459eb2b",
+      "hostname": "runnervmjduv7",
+      "platform": "Linux-6.14.0-1017-azure-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    },
+    "git": {
+      "commit": "56983f43242698a94d59fb69d88f54896ad796b9",
+      "commit_short": "56983f43",
+      "branch": "copilot/fix-zero-division-error",
+      "dirty": true
+    }
+  }
+}
