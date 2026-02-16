@@ -371,7 +371,8 @@ for step in range(args.num_steps):
                 if patience_counter >= args.early_stop_patience:
                     print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}{val_loss_str}")
                     print(f"Early stopping: validation loss did not improve for {args.early_stop_patience} evaluations")
-                    # Trim to actual steps taken
+                    # Note: lossf_history already has correct length (step+1), trim is defensive
+                    # val_lossf_history is correct since it's only appended during evaluation
                     lossf_history = lossf_history[:step+1]
                     break
     
