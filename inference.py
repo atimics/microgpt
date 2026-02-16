@@ -92,15 +92,9 @@ def matvec_infer(mat, vec):
     """Matrix-vector multiply for inference."""
     if HAS_C:
         n_out, n_in = len(mat), len(mat[0])
-        out = _DA('d', bytes(n_out * 8))
-        _C.matvec_flat(
-            _DA('d', [x for row in mat for x in row]),
-            _DA('d', vec),
-            out,
-            n_out,
-            n_in
-        )
-        return list(out)
+        flat_mat = _DA('d', [x for row in mat for x in row])
+        result = _C.matvec_flat(flat_mat, _DA('d', vec), n_out, n_in)
+        return list(result)
     else:
         return [sum(mat[i][j] * vec[j] for j in range(len(vec))) for i in range(len(mat))]
 
