@@ -1,0 +1,59 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 1,
+    "learning_rate": 0.01
+  },
+  "num_params": 4064,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "loss_history": [
+    3.262669756552358
+  ],
+  "loss_final": 3.262669756552358,
+  "loss_mean_last_50": 3.262669756552358,
+  "training_time_seconds": 0.051,
+  "generated_samples": [
+    "skgufs",
+    "nuhnye",
+    "ymmxrfnr",
+    "kuwhzdbl",
+    "fqirplb",
+    "bkpvlcph",
+    "oawdsies",
+    "yk",
+    "fqelidxh",
+    "ypjhckdp",
+    "kgd",
+    "uhygvzyx",
+    "guvodcpm",
+    "nseqyzxt",
+    "fxlumxfd",
+    "gpigwmcz",
+    "ilijshww",
+    "rvpoufxq",
+    "qcmwypsn",
+    ""
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-16T01:15:41.767126+00:00",
+    "timestamp_local": "20260216_011541",
+    "machine": {
+      "machine_id": "5b118459eb2b",
+      "hostname": "runnervmjduv7",
+      "platform": "Linux-6.14.0-1017-azure-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    },
+    "git": {
+      "commit": "ec458edd283e71293aea4c0eac82dc6a7a39b0ac",
+      "commit_short": "ec458edd",
+      "branch": "copilot/add-inference-script",
+      "dirty": true
+    }
+  }
+}

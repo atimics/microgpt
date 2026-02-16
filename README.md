@@ -35,6 +35,28 @@ python setup.py build_ext --inplace
 python train_fast.py --num-steps 500
 ```
 
+### Inference
+
+```bash
+# Train and save a model
+python train.py --num-steps 500 --save-model model.json
+
+# Generate samples with temperature sampling
+python inference.py --model model.json --temperature 0.8 --num-samples 10
+
+# Use top-k sampling (only sample from top k tokens)
+python inference.py --model model.json --top-k 10 --num-samples 5
+
+# Use top-p/nucleus sampling (sample from tokens with cumulative probability >= p)
+python inference.py --model model.json --top-p 0.9 --num-samples 5
+
+# Interactive mode (generate one at a time)
+python inference.py --model model.json --interactive
+
+# Streaming output (print characters as they're generated)
+python inference.py --model model.json --stream --num-samples 3
+```
+
 ### Performance Analysis
 
 ```bash
@@ -51,16 +73,23 @@ python benchmark.py compare baseline.json current.json
 ## 📚 What's Inside
 
 ### Core Training Files
-- **`train.py`**: Reference pure Python implementation (~460 lines)
+- **`train.py`**: Reference pure Python implementation (~735 lines)
   - Custom autograd engine (vector-level, not scalar)
   - GPT architecture with RMSNorm, square ReLU, no biases
   - Character-level tokenization
   - Adam optimizer
+  - Model serialization (`--save-model`)
   
 - **`train_fast.py`**: Optimized version with C extensions (~340 lines)
   - Flat memory layout for zero-copy operations
   - C-accelerated hot paths
   - Identical algorithm to `train.py` (verified by tests)
+
+- **`inference.py`**: Standalone inference script (~285 lines)
+  - Load saved models from JSON
+  - Temperature, top-k, and top-p (nucleus) sampling
+  - Interactive and streaming modes
+  - Compatible with both pure Python and C backends
 
 - **`fastops.c`**: C extension for performance (~630 lines)
   - Matrix operations (matvec, linear backward)

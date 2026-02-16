@@ -13,6 +13,7 @@ import sys
 import json
 import os
 import argparse
+import tempfile
 
 
 def run(cmd, **kwargs):
@@ -247,7 +248,6 @@ def test_roofline_all_configs():
     print("  PASS: roofline all-configs analytical")
 
 
-<<<<<<< HEAD
 def test_validation_n_embd_divisibility():
     """Verify n_embd divisibility validation rejects invalid configs."""
     rc, out, err = run([sys.executable, 'train.py', '--n-embd', '16', '--n-head', '5', '--num-steps', '1'])
@@ -509,6 +509,61 @@ def test_validation_roofline():
     print("  PASS: roofline.py handles invalid n_embd/n_head gracefully")
 
 
+def test_inference_script():
+    """Test standalone inference script with saved model."""
+    # Train a small model and save it
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+        model_path = f.name
+    
+    try:
+        rc, out, err = run([sys.executable, 'train.py', '--num-steps', '20', '--seed', '42', 
+                            '--save-model', model_path])
+        assert rc == 0, f"train.py with --save-model failed (rc={rc}):\n{err}"
+        assert os.path.exists(model_path), f"Model file not created at {model_path}"
+        
+        # Test basic inference
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+                            '--num-samples', '3', '--seed', '100'])
+        assert rc == 0, f"inference.py basic test failed (rc={rc}):\n{err}"
+        assert 'Sample 1:' in out, "Missing sample 1 in output"
+        assert 'Sample 2:' in out, "Missing sample 2 in output"
+        assert 'Sample 3:' in out, "Missing sample 3 in output"
+        
+        # Test temperature parameter
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+                            '--temperature', '0.5', '--num-samples', '2', '--seed', '100'])
+        assert rc == 0, f"inference.py with temperature failed (rc={rc}):\n{err}"
+        assert 'temperature=0.5' in out, "Temperature not shown in output"
+        
+        # Test top-k sampling
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+                            '--top-k', '5', '--num-samples', '2', '--seed', '100'])
+        assert rc == 0, f"inference.py with top-k failed (rc={rc}):\n{err}"
+        assert 'top_k=5' in out, "Top-k not shown in output"
+        
+        # Test top-p sampling
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+                            '--top-p', '0.9', '--num-samples', '2', '--seed', '100'])
+        assert rc == 0, f"inference.py with top-p failed (rc={rc}):\n{err}"
+        assert 'top_p=0.9' in out, "Top-p not shown in output"
+        
+        # Test max-length parameter
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+                            '--max-length', '3', '--num-samples', '2', '--seed', '100'])
+        assert rc == 0, f"inference.py with max-length failed (rc={rc}):\n{err}"
+        
+        # Test streaming output
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+                            '--stream', '--num-samples', '2', '--seed', '100'])
+        assert rc == 0, f"inference.py with streaming failed (rc={rc}):\n{err}"
+    finally:
+        # Clean up
+        if os.path.exists(model_path):
+            os.unlink(model_path)
+    
+    print("  PASS: inference script (all modes)")
+
+
 def main():
     parser = argparse.ArgumentParser(description='microgpt smoke tests')
     parser.add_argument('--quick', action='store_true',
@@ -544,6 +599,7 @@ def main():
         ('Validation: fast path', test_validation_fast_path),
         ('Inference flags (ref)', test_inference_cli_flags_reference),
         ('Inference flags (fast)', test_inference_cli_flags_fast),
+        ('Inference script',      test_inference_script),
         ('Roofline analytical',   test_roofline_analytical),
         ('Roofline all-configs',  test_roofline_all_configs),
         ('Validation train.py',   test_validation_train),
