@@ -130,6 +130,33 @@ def test_equivalence_with_schedules():
     print(f"  PASS: equivalence with cosine schedule (max diff: {max_diff:.2e})")
 
 
+def test_validation_warmup_equals_num_steps():
+    """Test that warmup_steps >= num_steps is rejected."""
+    rc, out, err = run([
+        sys.executable, 'train.py',
+        '--num-steps', '10',
+        '--warmup-steps', '10',
+        '--no-archive'
+    ])
+    assert rc != 0, "train.py should fail when warmup_steps >= num_steps"
+    assert 'warmup_steps' in err or 'warmup_steps' in out, \
+        f"Expected error message about warmup_steps:\n{err}\n{out}"
+    print("  PASS: validation rejects warmup_steps >= num_steps")
+
+
+def test_validation_warmup_exceeds_num_steps():
+    """Test that warmup_steps > num_steps is rejected."""
+    rc, out, err = run([
+        sys.executable, 'train_fast.py',
+        '--num-steps', '10',
+        '--warmup-steps', '15',
+    ])
+    assert rc != 0, "train_fast.py should fail when warmup_steps > num_steps"
+    assert 'warmup_steps' in err or 'warmup_steps' in out, \
+        f"Expected error message about warmup_steps:\n{err}\n{out}"
+    print("  PASS: validation rejects warmup_steps > num_steps")
+
+
 def main():
     """Run all learning rate schedule tests."""
     tests = [
@@ -140,6 +167,8 @@ def main():
         test_cosine_schedule_fast,
         test_warmup_fast,
         test_equivalence_with_schedules,
+        test_validation_warmup_equals_num_steps,
+        test_validation_warmup_exceeds_num_steps,
     ]
     
     print("Running learning rate schedule tests...")
