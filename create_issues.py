@@ -9,6 +9,21 @@ Usage:
   python create_issues.py
 
 Requires: gh CLI authenticated, or GH_TOKEN environment variable.
+
+Previously resolved issues (for reference):
+  - Bug: No validation that n_embd is divisible by n_head (fixed: assert in train.py/train_fast.py)
+  - Bug: No bounds checking on target index in C cross_entropy_forward (fixed: bounds check + epsilon)
+  - Bug: No bounds checking on idx in C embedding_flat (fixed: bounds check + IndexError)
+  - Bug: File handle leak when reading input.txt (fixed: context manager)
+  - Bug: Dataset download has no error handling (fixed: try/except + atomic temp file)
+  - Bug: Division by zero if head_dim is 0 (fixed: n_embd >= n_head validation)
+  - Bug: Potential numerical issue with log(0) in C cross_entropy (fixed: fmax clamping)
+  - Feature: Add docstrings to all major functions in train.py (done)
+  - Feature: Add inline documentation to fastops.c (done)
+  - Feature: Add gradient clipping (done: --grad-clip flag)
+  - Feature: Add cross-platform CI testing (done: Ubuntu, macOS, Windows matrix)
+  - Feature: Add code of conduct (done: in CONTRIBUTING.md)
+  - Feature: Add type hints to train.py (done: all function signatures)
 """
 
 import subprocess
@@ -18,176 +33,13 @@ import sys
 REPO = "atimics/microgpt"
 
 # ============================================================================
-# Issue definitions: bugs, then features organized by roadmap phase
+# Issue definitions: remaining bugs, then features organized by roadmap phase
 # ============================================================================
 
 ISSUES = [
     # ========================================================================
-    # BUGS
+    # REMAINING BUGS
     # ========================================================================
-    {
-        "title": "Bug: No validation that n_embd is divisible by n_head",
-        "labels": ["bug", "priority: high"],
-        "body": """## Description
-
-`head_dim = n_embd // n_head` (train.py:43, train_fast.py:29) performs integer division without validating that `n_embd` is evenly divisible by `n_head`. This silently drops dimensions.
-
-## Steps to Reproduce
-
-```bash
-python train.py --n-embd 16 --n-head 5
-```
-
-`head_dim` becomes 3 (16 // 5), but `n_head * head_dim = 15 != 16`. The last embedding dimension is silently ignored, producing incorrect attention computation.
-
-## Expected Behavior
-
-The script should validate at startup that `n_embd % n_head == 0` and exit with a clear error message if not.
-
-## Affected Files
-- `train.py:43`
-- `train_fast.py:29`
-
-## Suggested Fix
-
-```python
-assert n_embd % n_head == 0, f"n_embd ({n_embd}) must be divisible by n_head ({n_head})"
-```
-""",
-    },
-    {
-        "title": "Bug: No bounds checking on target index in C cross_entropy_forward",
-        "labels": ["bug", "priority: high", "C extension"],
-        "body": """## Description
-
-In `fastops.c:267-288`, the `cross_entropy_forward` function uses `target` as an array index into `buf` without any bounds checking. If `target >= vocab_size` or `target < 0`, this results in undefined behavior (out-of-bounds memory access).
-
-## Code Location
-
-```c
-// fastops.c:288
-double loss = -log(buf[target]);  // no bounds check on target
-```
-
-## Impact
-
-- Memory access violation / segfault
-- Potential data corruption if the memory happens to be valid
-- Security concern in educational code that students may adapt
-
-## Suggested Fix
-
-```c
-if (target < 0 || target >= n) {
-    free(buf);
-    darr_done(&lg);
-    PyErr_Format(PyExc_IndexError, "target index %zd out of range [0, %zd)", target, n);
-    return NULL;
-}
-```
-""",
-    },
-    {
-        "title": "Bug: No bounds checking on idx in C embedding_flat",
-        "labels": ["bug", "priority: high", "C extension"],
-        "body": """## Description
-
-In `fastops.c:481`, `embedding_flat` uses `idx * dim` as an offset into the data buffer without verifying it's within bounds.
-
-```c
-// fastops.c:481
-PyObject *result = darr_new(d.ptr + idx * dim, dim);
-```
-
-If `idx` is negative or `idx * dim + dim > buffer_length`, this reads out-of-bounds memory.
-
-## Impact
-
-- Out-of-bounds read, potential segfault
-- Could return garbage data silently
-
-## Suggested Fix
-
-```c
-if (idx < 0 || (idx + 1) * dim > d.n) {
-    darr_done(&d);
-    PyErr_Format(PyExc_IndexError, "embedding index %zd out of range for buffer of %zd elements with dim %zd", idx, d.n, dim);
-    return NULL;
-}
-```
-""",
-    },
-    {
-        "title": "Bug: File handle leak when reading input.txt",
-        "labels": ["bug", "priority: medium"],
-        "body": """## Description
-
-Both `train.py:50` and `train_fast.py:36` open `input.txt` without using a context manager:
-
-```python
-docs = [l.strip() for l in open('input.txt').read().strip().split('\\n') if l.strip()]
-```
-
-This relies on garbage collection to close the file handle, which is not guaranteed to happen promptly (especially on non-CPython implementations like PyPy).
-
-## Suggested Fix
-
-```python
-with open('input.txt') as f:
-    docs = [l.strip() for l in f.read().strip().split('\\n') if l.strip()]
-```
-
-## Affected Files
-- `train.py:50`
-- `train_fast.py:36`
-""",
-    },
-    {
-        "title": "Bug: Dataset download has no error handling",
-        "labels": ["bug", "priority: medium"],
-        "body": """## Description
-
-In `train.py:48-49` and `train_fast.py:33-35`, the dataset download via `urllib.request.urlretrieve()` has no error handling:
-
-```python
-if not os.path.exists('input.txt'):
-    import urllib.request
-    urllib.request.urlretrieve('https://raw.githubusercontent.com/karpathy/makemore/refs/heads/master/names.txt', 'input.txt')
-```
-
-If the network is unavailable, the URL is unreachable, or the download is interrupted, the script crashes with an unhelpful traceback. Worse, a partial download could leave a corrupt `input.txt` that persists across runs.
-
-## Suggested Fix
-
-- Wrap in try/except with a clear error message
-- Download to a temp file first, then rename (atomic)
-- Provide a fallback message directing users to supply their own `input.txt`
-""",
-    },
-    {
-        "title": "Bug: Division by zero possible if head_dim is 0 in attention",
-        "labels": ["bug", "priority: medium", "C extension"],
-        "body": """## Description
-
-In `train.py:221` and `fastops.c:346`:
-
-```python
-scale = head_dim ** 0.5  # Python
-```
-```c
-double scale = sqrt((double)head_dim);  // C
-```
-
-If `head_dim` is 0 (e.g., `n_embd < n_head`), the scale becomes 0, leading to division by zero on `s / scale` in the attention computation.
-
-While current CLI defaults prevent this, there's no validation preventing a user from setting `--n-embd 2 --n-head 4` which yields `head_dim = 0`.
-
-## Affected Files
-- `train.py:221, 233`
-- `train_fast.py` (via C extension)
-- `fastops.c:346, 355`
-""",
-    },
     {
         "title": "Bug: Empty dataset causes ZeroDivisionError in training loop",
         "labels": ["bug", "priority: medium"],
@@ -196,7 +48,8 @@ While current CLI defaults prevent this, there's no validation preventing a user
 If `input.txt` contains only blank lines or whitespace, the `docs` list will be empty after filtering:
 
 ```python
-docs = [l.strip() for l in open('input.txt').read().strip().split('\\n') if l.strip()]
+with open('input.txt') as f:
+    docs = [l.strip() for l in f.read().strip().split('\\n') if l.strip()]
 ```
 
 This causes `docs_tokenized[step % len(docs)]` to raise `ZeroDivisionError` since `len(docs)` is 0.
@@ -211,90 +64,73 @@ if not docs:
     print("Error: input.txt contains no non-empty lines", file=sys.stderr)
     sys.exit(1)
 ```
+
+## Affected Files
+- `train.py`
+- `train_fast.py`
 """,
     },
     {
-        "title": "Bug: Potential numerical issue with log(0) in C cross_entropy",
-        "labels": ["bug", "priority: low", "C extension"],
+        "title": "Bug: Missing positive value validation for hyperparameters",
+        "labels": ["bug", "priority: medium"],
         "body": """## Description
 
-In `fastops.c:288`:
+While `n_embd % n_head` and `n_embd >= n_head` validation was added, other hyperparameters
+lack basic positive value checks. For example, `--n-layer 0` or `--block-size -1` will produce
+confusing errors deep in the training loop rather than a clear startup error.
 
-```c
-double loss = -log(buf[target]);
+## Validations to Add
+
+```python
+# At startup, after parsing args:
+assert n_embd > 0, "n_embd must be positive"
+assert n_layer > 0, "n_layer must be positive"
+assert n_head > 0, "n_head must be positive"
+assert block_size > 0, "block_size must be positive"
+assert args.num_steps > 0, "num_steps must be positive"
+assert args.learning_rate > 0, "learning_rate must be positive"
 ```
 
-While the softmax normalization should ensure `buf[target] > 0`, extreme floating-point underflow could produce `buf[target] = 0.0`, making `log(0)` return `-inf` or `nan`, which then corrupts all subsequent gradient computations silently.
+## Affected Files
+- `train.py`
+- `train_fast.py`
+""",
+    },
+    {
+        "title": "Bug: train_fast.py missing run archiving support",
+        "labels": ["bug", "priority: low"],
+        "body": """## Description
 
-Similarly in `fastops.c:282-283`, `exp()` could overflow for large logit differences despite the max-subtraction trick.
+`train.py` has optional run archiving via `run_utils.archive_run()` and a `--no-archive` flag,
+but `train_fast.py` does not include this functionality. Training runs with the fast path
+are not automatically archived to the `runs/` directory.
+
+## Expected Behavior
+
+Both `train.py` and `train_fast.py` should have identical run archiving behavior.
 
 ## Suggested Fix
 
-Add a small epsilon or clamp:
-```c
-double loss = -log(fmax(buf[target], 1e-30));
+Add the same archive_run import and call to `train_fast.py`:
+```python
+try:
+    from run_utils import archive_run as _archive_run
+except ImportError:
+    _archive_run = None
+
+# ... at end of file:
+if _archive_run and not args.no_archive:
+    dest = _archive_run(run_metrics, 'training_fast')
+    print(f"run archived: {dest}")
 ```
+
+## Affected Files
+- `train_fast.py`
 """,
     },
     # ========================================================================
-    # FEATURE: Phase 1 - Documentation & Accessibility
+    # FEATURE: Phase 1 - Documentation (remaining items)
     # ========================================================================
-    {
-        "title": "Add docstrings to all major functions in train.py",
-        "labels": ["enhancement", "documentation", "phase: 1"],
-        "body": """## Description
-
-As an educational project, `train.py` would benefit from docstrings on all major functions explaining:
-- What the function computes
-- Parameter descriptions
-- Return values
-- Algorithmic complexity
-
-## Functions Needing Docstrings
-
-- `embedding()` - Row extraction with gradient accumulation
-- `linear()` - Matrix-vector multiply with hand-unrolled loops
-- `rmsnorm()` - Root mean square normalization
-- `tensor_add()` - Element-wise vector addition
-- `squared_relu()` - Squared ReLU activation
-- `attention()` - Multi-head self-attention with causal masking
-- `cross_entropy()` - Softmax + negative log likelihood loss
-- `mean_loss()` - Average of per-token losses
-- `gpt()` - Training forward pass (builds autograd graph)
-- `gpt_inference()` - Inference forward pass (plain floats)
-
-## Acceptance Criteria
-
-- Each function has a docstring explaining its mathematical operation
-- No external dependencies added
-- Educational tone maintained
-
-## Roadmap Reference
-Phase 1: Documentation & Accessibility
-""",
-    },
-    {
-        "title": "Add inline documentation to fastops.c",
-        "labels": ["enhancement", "documentation", "phase: 1", "C extension"],
-        "body": """## Description
-
-The C extension (`fastops.c`, 626 lines) has minimal comments. For an educational project, each function should document:
-- The operation being performed
-- Memory layout assumptions
-- Buffer protocol vs list fallback behavior
-- Numerical stability considerations
-
-## Key Areas Needing Documentation
-
-1. **DArr abstraction** (lines 17-66): Explain the zero-copy vs malloc strategy
-2. **Attention forward/backward** (lines 320-471): Most complex functions, need step-by-step comments
-3. **Memory management patterns**: When `calloc` vs `malloc` is used and why
-4. **Error handling convention**: The cascading `darr_done()` cleanup pattern
-
-## Roadmap Reference
-Phase 1: Documentation & Accessibility
-""",
-    },
     {
         "title": "Create examples directory with different dataset configurations",
         "labels": ["enhancement", "documentation", "phase: 1"],
@@ -317,7 +153,7 @@ Phase 1: Documentation & Accessibility - Examples directory
 """,
     },
     # ========================================================================
-    # FEATURE: Phase 2 - Core Functionality
+    # FEATURE: Phase 2 - Core Functionality (next priority)
     # ========================================================================
     {
         "title": "Add model serialization (save/load trained models)",
@@ -390,44 +226,6 @@ Currently all documents are used for training with no validation split. There is
 
 ## Roadmap Reference
 Phase 2: Core Functionality - Improved Dataset Handling / Training Improvements
-""",
-    },
-    {
-        "title": "Add gradient clipping to prevent training instability",
-        "labels": ["enhancement", "phase: 2"],
-        "body": """## Description
-
-The training loop has no gradient clipping, which can cause training instability (exploding gradients), especially with larger models or higher learning rates.
-
-## Proposed Implementation
-
-Add global gradient norm clipping before the Adam update:
-
-```python
-# Compute global gradient norm
-total_norm = 0.0
-for p in params:
-    for row in p.grad:
-        total_norm += sum(g * g for g in row)
-total_norm = total_norm ** 0.5
-
-# Clip
-if total_norm > max_norm:
-    scale = max_norm / total_norm
-    for p in params:
-        for row in p.grad:
-            for j in range(len(row)):
-                row[j] *= scale
-```
-
-## CLI Argument
-
-```
---grad-clip 1.0    # max gradient norm (0 = disabled)
-```
-
-## Roadmap Reference
-Phase 2: Core Functionality - Training Improvements
 """,
     },
     {
@@ -548,6 +346,30 @@ BPE is the standard tokenization method used in GPT-2/3/4, making this a valuabl
 Phase 2: Core Functionality - Enhanced Tokenization
 """,
     },
+    {
+        "title": "Make hardcoded constants configurable via CLI",
+        "labels": ["enhancement", "phase: 2", "code quality"],
+        "body": """## Description
+
+Several important constants are hardcoded without explanation or configurability:
+
+| Constant | Location | Value | Purpose |
+|----------|----------|-------|---------|
+| `1e-5` | train.py:270 | RMSNorm epsilon | Numerical stability |
+| `0.02` | train.py:130 | Weight init std | Parameter initialization |
+| `0.9, 0.95` | train.py:641 | Adam beta1, beta2 | Optimizer momentum |
+| `1e-8` | train.py:641 | Adam epsilon | Optimizer numerical stability |
+| `4 * n_embd` | train.py:149 | MLP hidden dim | Architecture choice |
+| `0.5` | train.py:702 | Temperature | Inference sampling |
+| `20` | train.py:705 | Num samples | Inference count |
+
+## Proposed Changes
+
+1. Add CLI arguments for commonly-tuned values (temperature, num_samples)
+2. Add comments explaining the less configurable constants
+3. Group constants at the top of the file for visibility
+""",
+    },
     # ========================================================================
     # FEATURE: Phase 3 - Performance & Scalability
     # ========================================================================
@@ -560,10 +382,10 @@ The C extension (`fastops.c`) uses scalar operations for all computation. Adding
 
 ## Key Opportunities
 
-1. **matvec_flat** (line 499-505): Dot product is the hot path, ideal for SIMD
-2. **adam_update_flat** (line 564-568): Element-wise operations perfect for vectorization
-3. **attention_forward** (line 348-371): QK dot products and softmax
-4. **rmsnorm_forward** (line 146): Sum of squares reduction
+1. **matvec_flat**: Dot product is the hot path, ideal for SIMD
+2. **adam_update_flat**: Element-wise operations perfect for vectorization
+3. **attention_forward**: QK dot products and softmax
+4. **rmsnorm_forward**: Sum of squares reduction
 
 ## Implementation Notes
 
@@ -762,128 +584,24 @@ Phase 5: Community & Ecosystem - Community Guidelines
 """,
     },
     {
-        "title": "Add cross-platform CI testing (macOS, Windows)",
-        "labels": ["enhancement", "phase: 5", "CI/CD"],
-        "body": """## Description
-
-The CI pipeline currently only tests on Ubuntu. The roadmap targets cross-platform compatibility (Linux, macOS, Windows).
-
-## Current State
-
-- CI runs on `ubuntu-latest` only
-- C extension uses Linux-specific flags (`-lmvec`)
-- `roofline.py` uses `lscpu` which is Linux-only
-
-## Proposed Changes
-
-1. Add macOS runner to CI matrix
-2. Add Windows runner with MSVC compilation
-3. Make `setup.py` platform-aware for compiler flags
-4. Make `roofline.py` CPU detection work on macOS/Windows
-5. Test that all smoke tests pass on all platforms
-
-## Roadmap Reference
-Phase 5: Community & Ecosystem - Success Metrics (Cross-platform compatibility)
-""",
-    },
-    {
-        "title": "Add code of conduct and maintainer guidelines",
+        "title": "Add maintainer guidelines document",
         "labels": ["enhancement", "phase: 5", "community"],
         "body": """## Description
 
-As the project grows, formal community guidelines are needed.
+As the project grows, formal maintainer guidelines are needed to ensure consistent
+quality and process across contributions.
 
-## Documents to Create
+## Document to Create
 
-1. **CODE_OF_CONDUCT.md**: Based on Contributor Covenant or similar
-2. **MAINTAINER.md**: Guidelines for maintainers
-   - Issue triage process
-   - PR review standards
-   - Release process
-   - Performance regression handling
+**MAINTAINER.md**: Guidelines for maintainers
+- Issue triage process and response time expectations
+- PR review standards and checklist
+- Release process and versioning policy
+- Performance regression handling procedures
+- Branch management and merge strategy
 
 ## Roadmap Reference
 Phase 5: Community & Ecosystem - Community Guidelines
-""",
-    },
-    # ========================================================================
-    # IMPROVEMENT: Code Quality
-    # ========================================================================
-    {
-        "title": "Make hardcoded constants configurable via CLI",
-        "labels": ["enhancement", "code quality"],
-        "body": """## Description
-
-Several important constants are hardcoded without explanation or configurability:
-
-| Constant | Location | Value | Purpose |
-|----------|----------|-------|---------|
-| `1e-5` | train.py:184 | RMSNorm epsilon | Numerical stability |
-| `0.02` | train.py:108 | Weight init std | Parameter initialization |
-| `0.9, 0.95` | train.py:368 | Adam beta1, beta2 | Optimizer momentum |
-| `1e-8` | train.py:368 | Adam epsilon | Optimizer numerical stability |
-| `4 * n_embd` | train.py:127 | MLP hidden dim | Architecture choice |
-| `0.5` | train.py:415 | Temperature | Inference sampling |
-| `20` | train.py:418 | Num samples | Inference count |
-
-## Proposed Changes
-
-1. Add CLI arguments for commonly-tuned values (temperature, num_samples)
-2. Add comments explaining the less configurable constants
-3. Group constants at the top of the file for visibility
-""",
-    },
-    {
-        "title": "Improve error messages for invalid configurations",
-        "labels": ["enhancement", "code quality"],
-        "body": """## Description
-
-Invalid hyperparameter configurations currently produce confusing errors deep in the training loop. Startup validation should catch common mistakes early.
-
-## Validations to Add
-
-```python
-# At startup, after parsing args:
-assert n_embd > 0, "n_embd must be positive"
-assert n_layer > 0, "n_layer must be positive"
-assert n_head > 0, "n_head must be positive"
-assert block_size > 0, "block_size must be positive"
-assert args.num_steps > 0, "num_steps must be positive"
-assert args.learning_rate > 0, "learning_rate must be positive"
-assert n_embd % n_head == 0, f"n_embd ({n_embd}) must be divisible by n_head ({n_head})"
-```
-
-## Affected Files
-- `train.py`
-- `train_fast.py`
-""",
-    },
-    {
-        "title": "Add type hints to train.py for educational clarity",
-        "labels": ["enhancement", "code quality", "documentation"],
-        "body": """## Description
-
-Adding type hints to function signatures would improve code readability and serve as documentation for the expected data types, which is especially valuable in an educational codebase.
-
-## Example
-
-```python
-def embedding(param: Param, idx: int) -> Tensor:
-    ...
-
-def linear(x: Tensor, w: Param) -> Tensor:
-    ...
-
-def attention(q: Tensor, keys: list[Tensor], values: list[Tensor],
-              n_head: int, head_dim: int) -> Tensor:
-    ...
-```
-
-## Scope
-
-- Function signatures only (not internal variables)
-- Both `train.py` and `train_fast.py`
-- Type aliases for clarity where needed
 """,
     },
 ]

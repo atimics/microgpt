@@ -122,8 +122,10 @@ python test_smoke.py --quick
 # Full test suite (required before submitting PR)
 python test_smoke.py
 
-# Specific test
-python -m pytest test_smoke.py::test_c_extension_ops
+# Additional test suites
+python test_cross_entropy_edge_cases.py   # numerical stability tests
+python test_download_error_handling.py    # download robustness tests
+python test_gradient_clipping.py          # gradient clipping tests
 ```
 
 ## 📊 Performance Benchmarking

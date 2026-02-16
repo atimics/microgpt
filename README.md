@@ -51,24 +51,26 @@ python benchmark.py compare baseline.json current.json
 ## 📚 What's Inside
 
 ### Core Training Files
-- **`train.py`**: Reference pure Python implementation (~460 lines)
+- **`train.py`**: Reference pure Python implementation (~750 lines)
   - Custom autograd engine (vector-level, not scalar)
   - GPT architecture with RMSNorm, square ReLU, no biases
   - Character-level tokenization
-  - Adam optimizer
-  
-- **`train_fast.py`**: Optimized version with C extensions (~340 lines)
+  - Adam optimizer with optional gradient clipping
+  - Comprehensive docstrings on all major functions
+
+- **`train_fast.py`**: Optimized version with C extensions (~380 lines)
   - Flat memory layout for zero-copy operations
   - C-accelerated hot paths
   - Identical algorithm to `train.py` (verified by tests)
 
-- **`fastops.c`**: C extension for performance (~630 lines)
+- **`fastops.c`**: C extension for performance (~1030 lines)
   - Matrix operations (matvec, linear backward)
   - Fused operations (RMSNorm, attention, etc.)
   - AVX-friendly memory layout
+  - Inline documentation and bounds checking
 
 ### Analysis & Tooling
-- **`roofline.py`**: Performance analysis (~770 lines)
+- **`roofline.py`**: Performance analysis (~860 lines)
   - Theoretical FLOP counting
   - Memory bandwidth measurement
   - Compute vs memory bound determination
@@ -84,11 +86,12 @@ python benchmark.py compare baseline.json current.json
   - Performance trend graphs
   - GitHub-friendly output
 
-- **`test_smoke.py`**: Comprehensive test suite (~250 lines)
-  - C extension verification
+- **`test_smoke.py`**: Comprehensive test suite (~370 lines)
+  - C extension verification and bounds checking
   - Training convergence tests
   - Python/C equivalence testing
   - Roofline analysis validation
+  - Parameter validation tests
 
 ### Supporting Files
 - **`harness.py`**: Training wrapper with run archiving
@@ -165,6 +168,7 @@ python roofline.py --all-configs
 ### CI/CD
 
 The project includes comprehensive GitHub Actions CI:
+- Cross-platform testing on Ubuntu, macOS, and Windows
 - Automated testing on Python 3.11 and 3.12
 - Performance benchmarking on every commit
 - Regression detection with baseline comparison
