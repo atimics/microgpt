@@ -1,0 +1,55 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 3,
+    "learning_rate": 0.01
+  },
+  "num_params": 3552,
+  "vocab_size": 11,
+  "num_docs": 4,
+  "loss_history": [
+    2.374604964211998,
+    2.3974595834928274,
+    2.1847506782522266
+  ],
+  "loss_final": 2.1847506782522266,
+  "loss_mean_last_50": 2.318938408652351,
+  "training_time_seconds": 0.0641,
+  "generated_samples": [
+    "r2dn",
+    "il1reigs",
+    "",
+    "nigirnrl",
+    "1n1iidrd",
+    "il2eddn1",
+    "irgrgdlg",
+    "22llr1ls",
+    "1illliis",
+    "lirgre",
+    "1e",
+    "",
+    "2nsl1",
+    "n2gdeilg",
+    "2iegnll",
+    "dgrls",
+    "n2rre2in",
+    "din2l2es",
+    "",
+    "sl1"
+  ],
+  "has_c_ext": false,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-16T01:15:39.710619+00:00",
+    "timestamp_local": "20260216_011539",
+    "machine": {
+      "machine_id": "5b118459eb2b",
+      "hostname": "runnervmjduv7",
+      "platform": "Linux-6.14.0-1017-azure-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    }
+  }
+}
