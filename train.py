@@ -841,6 +841,7 @@ if not args.inference_only:
 
         # Adam update (optimizer)
         # Compute learning rate with schedule and warmup
+        # Use global step count (initial_step + step) to maintain continuity when resuming training
         actual_step = initial_step + step
         if actual_step < args.warmup_steps:
             # Linear warmup: ramps from lr/warmup_steps to lr
