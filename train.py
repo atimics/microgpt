@@ -58,7 +58,12 @@ parser.add_argument('--no-archive', action='store_true', help='Skip auto-archive
 parser.add_argument('--val-split', type=float, default=0.0, help='Fraction of data for validation (0 = no validation)')
 parser.add_argument('--val-every', type=int, default=50, help='Evaluate validation loss every N steps')
 parser.add_argument('--early-stop-patience', type=int, default=0, help='Stop after N evaluations without improvement (0 = no early stopping)')
+parser.add_argument('--save-model', type=str, default=None, help='Path to save the trained model (JSON format)')
+parser.add_argument('--load-model', type=str, default=None, help='Path to load a trained model from (JSON format)')
+parser.add_argument('--inference-only', action='store_true', help='Skip training, only run inference (requires --load-model)')
 args = parser.parse_args()
+if args.inference_only and not args.load_model:
+    parser.error("--inference-only requires --load-model")
 n_embd, block_size, n_layer, n_head = args.n_embd, args.block_size, args.n_layer, args.n_head
 if n_embd < n_head:
     parser.error(f"n_embd ({n_embd}) must be >= n_head ({n_head}) to avoid division by zero in attention")
@@ -191,15 +196,100 @@ class Param:
         for i in range(self.nout):
             self.grad[i] = _DA('d', bytes(nin * 8))
 
+# Serialization functions
+def save_model(path, state_dict, hyperparams, vocab_mapping, optimizer_step=0, loss_history=None):
+    """Save model weights, hyperparameters, vocabulary, and optimizer state to JSON."""
+    model_data = {
+        'hyperparams': hyperparams,
+        'vocab': vocab_mapping,
+        'optimizer_step': optimizer_step,
+        'loss_history': loss_history or [],
+        'weights': {}
+    }
+    
+    # Serialize each parameter's data and optimizer state
+    for name, param in state_dict.items():
+        model_data['weights'][name] = {
+            'nout': param.nout,
+            'nin': param.nin,
+            'data': [[float(x) for x in row] for row in param.data],
+            'm': [[float(x) for x in row] for row in param.m],
+            'v': [[float(x) for x in row] for row in param.v]
+        }
+    
+    with open(path, 'w') as f:
+        json.dump(model_data, f, indent=2)
+    print(f"Model saved to {path}")
+
+def load_model(path):
+    """Load model weights, hyperparameters, vocabulary, and optimizer state from JSON."""
+    with open(path, 'r') as f:
+        model_data = json.load(f)
+    
+    hyperparams = model_data['hyperparams']
+    vocab = model_data['vocab']
+    optimizer_step = model_data.get('optimizer_step', 0)
+    loss_history = model_data.get('loss_history', [])
+    
+    # Reconstruct state_dict with loaded weights
+    state_dict = {}
+    for name, weight_data in model_data['weights'].items():
+        param = Param.__new__(Param)
+        param.nout = weight_data['nout']
+        param.nin = weight_data['nin']
+        param.data = [_DA('d', row) for row in weight_data['data']]
+        param.m = [_DA('d', row) for row in weight_data['m']]
+        param.v = [_DA('d', row) for row in weight_data['v']]
+        param.grad = [_DA('d', bytes(param.nin * 8)) for _ in range(param.nout)]
+        state_dict[name] = param
+    
+    print(f"Model loaded from {path}")
+    return state_dict, hyperparams, vocab, optimizer_step, loss_history
+
 # Model parameter initialization
-state_dict = {'wte': Param(vocab_size, n_embd), 'wpe': Param(block_size, n_embd), 'lm_head': Param(vocab_size, n_embd)}
-for i in range(n_layer):
-    state_dict[f'layer{i}.attn_wq'] = Param(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wk'] = Param(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wv'] = Param(n_embd, n_embd)
-    state_dict[f'layer{i}.attn_wo'] = Param(n_embd, n_embd, std=0)
-    state_dict[f'layer{i}.mlp_fc1'] = Param(MLP_HIDDEN_DIM_MULTIPLIER * n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc2'] = Param(n_embd, MLP_HIDDEN_DIM_MULTIPLIER * n_embd, std=0)
+initial_step = 0
+lossf_history = []
+
+if args.load_model:
+    # Load model from file
+    loaded_state_dict, loaded_hyperparams, loaded_vocab, initial_step, lossf_history = load_model(args.load_model)
+
+    # Verify hyperparameters match (or use loaded ones if not specified via CLI)
+    if loaded_hyperparams['n_embd'] != n_embd:
+        print(f"Warning: loaded n_embd={loaded_hyperparams['n_embd']}, but CLI specified {n_embd}. Using loaded value.")
+        n_embd = loaded_hyperparams['n_embd']
+    if loaded_hyperparams['n_layer'] != n_layer:
+        print(f"Warning: loaded n_layer={loaded_hyperparams['n_layer']}, but CLI specified {n_layer}. Using loaded value.")
+        n_layer = loaded_hyperparams['n_layer']
+    if loaded_hyperparams['n_head'] != n_head:
+        print(f"Warning: loaded n_head={loaded_hyperparams['n_head']}, but CLI specified {n_head}. Using loaded value.")
+        n_head = loaded_hyperparams['n_head']
+    if loaded_hyperparams['block_size'] != block_size:
+        print(f"Warning: loaded block_size={loaded_hyperparams['block_size']}, but CLI specified {block_size}. Using loaded value.")
+        block_size = loaded_hyperparams['block_size']
+
+    head_dim = n_embd // n_head
+
+    # Restore vocabulary
+    stoi = {k: int(v) for k, v in loaded_vocab['stoi'].items()}
+    itos = {int(k): v for k, v in loaded_vocab['itos'].items()}
+    vocab_size = len(stoi)
+    BOS = stoi['<BOS>']
+
+    # Use loaded state_dict
+    state_dict = loaded_state_dict
+
+    print(f"Resumed from step {initial_step}, vocab_size={vocab_size}")
+else:
+    # Initialize new model
+    state_dict = {'wte': Param(vocab_size, n_embd), 'wpe': Param(block_size, n_embd), 'lm_head': Param(vocab_size, n_embd)}
+    for i in range(n_layer):
+        state_dict[f'layer{i}.attn_wq'] = Param(n_embd, n_embd)
+        state_dict[f'layer{i}.attn_wk'] = Param(n_embd, n_embd)
+        state_dict[f'layer{i}.attn_wv'] = Param(n_embd, n_embd)
+        state_dict[f'layer{i}.attn_wo'] = Param(n_embd, n_embd, std=0)
+        state_dict[f'layer{i}.mlp_fc1'] = Param(MLP_HIDDEN_DIM_MULTIPLIER * n_embd, n_embd)
+        state_dict[f'layer{i}.mlp_fc2'] = Param(n_embd, MLP_HIDDEN_DIM_MULTIPLIER * n_embd, std=0)
 params = list(state_dict.values())
 num_params = sum(len(p.data) * len(p.data[0]) for p in params)
 print(f"num params: {num_params}")
@@ -710,100 +800,104 @@ def evaluate_validation():
     return sum(val_losses) / len(val_losses)
 
 # Training loop
-lossf_history = []
 val_lossf_history = []
 best_val_loss = float('inf')
 patience_counter = 0
 t_start = time.perf_counter()
-for step in range(args.num_steps):
+if not args.inference_only:
+    for step in range(args.num_steps):
 
-    # Take a single training document (pre-tokenized, surrounded with BOS on both sides)
-    tokens = train_docs_tokenized[step % len(train_docs)]
-    n = min(block_size, len(tokens) - 1)
+        # Take a single training document (pre-tokenized, surrounded with BOS on both sides)
+        tokens = train_docs_tokenized[step % len(train_docs)]
+        n = min(block_size, len(tokens) - 1)
 
-    # Zero gradients on all parameters
-    for p in params:
-        p.zero_grad()
-
-    # Forward/backward through the document over time dimension
-    keys_cache, values_cache = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
-    losses = []
-    for pos_id in range(n):
-        token_id, target_id = tokens[pos_id], tokens[pos_id + 1]
-        logits = gpt(token_id, pos_id, keys_cache, values_cache)
-        losses.append(cross_entropy(logits, target_id))
-    loss = mean_loss(losses)
-    loss.backward()
-
-    # Gradient clipping
-    if args.grad_clip > 0.0:
-        total_norm = 0.0
+        # Zero gradients on all parameters
         for p in params:
-            for row in p.grad:
-                total_norm += sum(g * g for g in row)
-        total_norm = total_norm ** 0.5
-        if total_norm > args.grad_clip:
-            scale = args.grad_clip / total_norm
+            p.zero_grad()
+
+        # Forward/backward through the document over time dimension
+        keys_cache, values_cache = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
+        losses = []
+        for pos_id in range(n):
+            token_id, target_id = tokens[pos_id], tokens[pos_id + 1]
+            logits = gpt(token_id, pos_id, keys_cache, values_cache)
+            losses.append(cross_entropy(logits, target_id))
+        loss = mean_loss(losses)
+        loss.backward()
+
+        # Gradient clipping
+        if args.grad_clip > 0.0:
+            total_norm = 0.0
             for p in params:
                 for row in p.grad:
-                    for j in range(len(row)):
-                        row[j] *= scale
+                    total_norm += sum(g * g for g in row)
+            total_norm = total_norm ** 0.5
+            if total_norm > args.grad_clip:
+                scale = args.grad_clip / total_norm
+                for p in params:
+                    for row in p.grad:
+                        for j in range(len(row)):
+                            row[j] *= scale
 
-    # Adam update (optimizer)
-    # Compute learning rate with schedule and warmup
-    if step < args.warmup_steps:
-        # Linear warmup: ramps from lr/warmup_steps to lr
-        # Using (step + 1) to avoid zero learning rate at step 0
-        lr_t = learning_rate * (step + 1) / args.warmup_steps
-    elif args.lr_schedule == 'cosine':
-        # Cosine annealing after warmup
-        progress = (step - args.warmup_steps) / (args.num_steps - args.warmup_steps)
-        lr_t = learning_rate * 0.5 * (1 + math.cos(math.pi * progress))
-    else:  # linear
-        # Linear decay after warmup
-        progress = (step - args.warmup_steps) / (args.num_steps - args.warmup_steps)
-        lr_t = learning_rate * (1 - progress)
-    bc1 = 1.0 - beta1 ** (step + 1)
-    bc2 = 1.0 - beta2 ** (step + 1)
-    one_m_b1 = 1.0 - beta1
-    one_m_b2 = 1.0 - beta2
-    for p in params:
-        p_data, p_grad, p_m, p_v = p.data, p.grad, p.m, p.v
-        for i in range(p.nout):
-            pd, pg, pm, pv = p_data[i], p_grad[i], p_m[i], p_v[i]
-            for j in range(p.nin):
-                g = pg[j]
-                pm[j] = beta1 * pm[j] + one_m_b1 * g
-                pv[j] = beta2 * pv[j] + one_m_b2 * g * g
-                pd[j] -= lr_t * (pm[j] / bc1) / ((pv[j] / bc2) ** 0.5 + eps_adam)
+        # Adam update (optimizer)
+        # Compute learning rate with schedule and warmup
+        # Use global step count (initial_step + step) to maintain continuity when resuming training
+        actual_step = initial_step + step
+        if actual_step < args.warmup_steps:
+            # Linear warmup: ramps from lr/warmup_steps to lr
+            # Using (actual_step + 1) to avoid zero learning rate at step 0
+            lr_t = learning_rate * (actual_step + 1) / args.warmup_steps
+        elif args.lr_schedule == 'cosine':
+            # Cosine annealing after warmup
+            progress = (actual_step - args.warmup_steps) / (args.num_steps - args.warmup_steps)
+            lr_t = learning_rate * 0.5 * (1 + math.cos(math.pi * progress))
+        else:  # linear
+            # Linear decay after warmup
+            progress = (actual_step - args.warmup_steps) / (args.num_steps - args.warmup_steps)
+            lr_t = learning_rate * (1 - progress)
+        bc1 = 1.0 - beta1 ** (actual_step + 1)
+        bc2 = 1.0 - beta2 ** (actual_step + 1)
+        one_m_b1 = 1.0 - beta1
+        one_m_b2 = 1.0 - beta2
+        for p in params:
+            p_data, p_grad, p_m, p_v = p.data, p.grad, p.m, p.v
+            for i in range(p.nout):
+                pd, pg, pm, pv = p_data[i], p_grad[i], p_m[i], p_v[i]
+                for j in range(p.nin):
+                    g = pg[j]
+                    pm[j] = beta1 * pm[j] + one_m_b1 * g
+                    pv[j] = beta2 * pv[j] + one_m_b2 * g * g
+                    pd[j] -= lr_t * (pm[j] / bc1) / ((pv[j] / bc2) ** 0.5 + eps_adam)
 
-    lossf_history.append(loss.data[0])
-    
-    # Evaluate on validation set periodically
-    val_loss_str = ""
-    if val_docs_tokenized and (step + 1) % args.val_every == 0:
-        val_loss = evaluate_validation()
-        val_lossf_history.append(val_loss)
-        val_loss_str = f" | val_loss {val_loss:.4f}"
-        
-        # Early stopping logic
-        if args.early_stop_patience > 0:
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                if patience_counter >= args.early_stop_patience:
-                    print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}{val_loss_str}")
-                    print(f"Early stopping: validation loss did not improve for {args.early_stop_patience} evaluations")
-                    # Note: lossf_history already has correct length (step+1), trim is defensive
-                    # val_lossf_history is correct since it's only appended during evaluation
-                    lossf_history = lossf_history[:step+1]
-                    break
-    
-    print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}{val_loss_str}")
-print(f"mean loss last 50 steps: {sum(lossf_history[-50:]) / len(lossf_history[-50:]):.4f}") # ~usable for basic kwarg tuning
-print(f"training time: {time.perf_counter() - t_start:.2f}s") # ~usable for basic performance benchmarking
+        lossf_history.append(loss.data[0])
+
+        # Evaluate on validation set periodically
+        val_loss_str = ""
+        if val_docs_tokenized and (step + 1) % args.val_every == 0:
+            val_loss = evaluate_validation()
+            val_lossf_history.append(val_loss)
+            val_loss_str = f" | val_loss {val_loss:.4f}"
+
+            # Early stopping logic
+            if args.early_stop_patience > 0:
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    if patience_counter >= args.early_stop_patience:
+                        print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}{val_loss_str}")
+                        print(f"Early stopping: validation loss did not improve for {args.early_stop_patience} evaluations")
+                        # Note: lossf_history already has correct length (step+1), trim is defensive
+                        # val_lossf_history is correct since it's only appended during evaluation
+                        lossf_history = lossf_history[:step+1]
+                        break
+
+        print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}{val_loss_str}")
+    print(f"mean loss last 50 steps: {sum(lossf_history[-50:]) / len(lossf_history[-50:]):.4f}") # ~usable for basic kwarg tuning
+    print(f"training time: {time.perf_counter() - t_start:.2f}s") # ~usable for basic performance benchmarking
+else:
+    print("Skipping training (inference-only mode)")
 
 # Inference: generate samples (no autograd)
 temperature = args.temperature
@@ -849,7 +943,7 @@ run_metrics = {
     'num_val_docs': len(val_docs),
     'loss_history': lossf_history,
     'val_loss_history': val_lossf_history,
-    'loss_final': lossf_history[-1],
+    'loss_final': lossf_history[-1] if lossf_history else 0.0,
     'loss_mean_last_50': mean_loss_last_50,
     'training_time_seconds': round(training_time, 4),
     'generated_samples': generated_samples,
@@ -857,6 +951,22 @@ run_metrics = {
 }
 with open('_last_run.json', 'w') as f:
     json.dump(run_metrics, f, indent=2)
+
+# Save model if requested
+if args.save_model:
+    hyperparams = {
+        'n_embd': n_embd,
+        'n_layer': n_layer,
+        'n_head': n_head,
+        'block_size': block_size,
+        'learning_rate': args.learning_rate,
+    }
+    vocab_mapping = {
+        'stoi': stoi,
+        'itos': itos
+    }
+    final_step = initial_step + (args.num_steps if not args.inference_only else 0)
+    save_model(args.save_model, state_dict, hyperparams, vocab_mapping, final_step, lossf_history)
 
 # Auto-archive to runs/ with git commit and machine metadata
 if _archive_run and not args.no_archive:
