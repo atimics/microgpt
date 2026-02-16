@@ -78,6 +78,8 @@ if args.learning_rate <= 0:
     raise ValueError("learning_rate must be positive")
 if n_embd % n_head != 0:
     raise ValueError(f"n_embd ({n_embd}) must be divisible by n_head ({n_head})")
+if args.warmup_steps < 0:
+    parser.error(f"warmup_steps ({args.warmup_steps}) must be non-negative")
 if args.warmup_steps >= args.num_steps:
     parser.error(f"warmup_steps ({args.warmup_steps}) must be less than num_steps ({args.num_steps})")
 head_dim = n_embd // n_head
