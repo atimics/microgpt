@@ -6,7 +6,6 @@ Test learning rate schedules (linear, cosine, warmup).
 import subprocess
 import sys
 import json
-import os
 import math
 
 
