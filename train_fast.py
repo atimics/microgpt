@@ -24,6 +24,7 @@ parser.add_argument('--block-size', type=int, default=8, help='Maximum sequence 
 parser.add_argument('--num-steps', type=int, default=500, help='Number of training steps')
 parser.add_argument('--n-head', type=int, default=4, help='Number of attention heads in the Transformer')
 parser.add_argument('--learning-rate', type=float, default=1e-2, help='Learning rate')
+parser.add_argument('--grad-clip', type=float, default=0.0, help='Max gradient norm (0 = disabled)')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
 args = parser.parse_args()
 n_embd, block_size, n_layer, n_head = args.n_embd, args.block_size, args.n_layer, args.n_head
@@ -308,6 +309,19 @@ for step in range(args.num_steps):
         losses.append(cross_entropy(logits, target_id))
     loss = mean_loss(losses)
     loss.backward()
+
+    # Gradient clipping
+    if args.grad_clip > 0.0:
+        total_norm = 0.0
+        for p in params:
+            for i in range(len(p.grad)):
+                total_norm += p.grad[i] * p.grad[i]
+        total_norm = total_norm ** 0.5
+        if total_norm > args.grad_clip:
+            scale = args.grad_clip / total_norm
+            for p in params:
+                for i in range(len(p.grad)):
+                    p.grad[i] *= scale
 
     # Adam update (flat — one C call per parameter, not per row)
     lr_t = learning_rate * (1 - step / args.num_steps)
