@@ -1,0 +1,50 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 3,
+    "learning_rate": 0.01,
+    "temperature": 0.7,
+    "num_samples": 7
+  },
+  "num_params": 4064,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "loss_history": [
+    3.262669756552358,
+    3.3002637725644015,
+    3.2136384463162964
+  ],
+  "loss_final": 3.2136384463162964,
+  "loss_mean_last_50": 3.258857325144352,
+  "training_time_seconds": 0.0497,
+  "generated_samples": [
+    "rkgufs",
+    "nthnye",
+    "ymmxrenq",
+    "kuwhzdcl",
+    "gqirplb",
+    "bkpvlcph",
+    "oawdshes"
+  ],
+  "has_c_ext": true,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-15T18:56:57.052208+00:00",
+    "timestamp_local": "20260215_185657",
+    "machine": {
+      "machine_id": "5b118459eb2b",
+      "hostname": "runnervmjduv7",
+      "platform": "Linux-6.14.0-1017-azure-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    },
+    "git": {
+      "commit": "dfb202f1c5d845f7cc0310f880c3084153e60567",
+      "commit_short": "dfb202f1",
+      "branch": "copilot/make-constants-configurable",
+      "dirty": true
+    }
+  }
+}

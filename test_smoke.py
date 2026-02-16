@@ -247,6 +247,7 @@ def test_roofline_all_configs():
     print("  PASS: roofline all-configs analytical")
 
 
+<<<<<<< HEAD
 def test_validation_n_embd_divisibility():
     """Verify n_embd divisibility validation rejects invalid configs."""
     rc, out, err = run([sys.executable, 'train.py', '--n-embd', '16', '--n-head', '5', '--num-steps', '1'])
@@ -438,6 +439,76 @@ def test_validation_fast_path():
     print("  PASS: validation works in train_fast.py")
 
 
+def test_inference_cli_flags_reference():
+    """Test inference CLI flags (--temperature, --num-samples) on reference path."""
+    rc, out, err = run([
+        sys.executable, 'train.py',
+        '--num-steps', '3', '--temperature', '0.7', '--num-samples', '7'
+    ])
+    assert rc == 0, f"train.py with inference flags failed (rc={rc}):\n{err}\n{out}"
+    with open('_last_run.json') as f:
+        metrics = json.load(f)
+    assert 'temperature' in metrics['hyperparams'], "temperature not in hyperparams"
+    assert metrics['hyperparams']['temperature'] == 0.7
+    assert metrics['hyperparams']['num_samples'] == 7
+    assert len(metrics['generated_samples']) == 7
+    print("  PASS: inference CLI flags (reference path)")
+
+
+def test_inference_cli_flags_fast():
+    """Test inference CLI flags (--temperature, --num-samples) on fast path."""
+    rc, out, err = run([
+        sys.executable, 'train_fast.py',
+        '--num-steps', '3', '--temperature', '0.3', '--num-samples', '5'
+    ])
+    assert rc == 0, f"train_fast.py with inference flags failed (rc={rc}):\n{err}\n{out}"
+    with open('_last_run.json') as f:
+        metrics = json.load(f)
+    assert 'temperature' in metrics['hyperparams'], "temperature not in hyperparams"
+    assert metrics['hyperparams']['temperature'] == 0.3
+    assert metrics['hyperparams']['num_samples'] == 5
+    assert len(metrics['generated_samples']) == 5
+    print("  PASS: inference CLI flags (fast path)")
+
+
+def test_validation_train():
+    """Test that train.py validates n_embd >= n_head."""
+    # Should fail with n_embd < n_head
+    rc, out, err = run([sys.executable, 'train.py', '--n-embd', '2', '--n-head', '4', '--num-steps', '1'])
+    assert rc != 0, f"train.py should have failed with n_embd=2, n_head=4 (rc={rc})"
+    assert "must be >= n_head" in err or "must be >= n_head" in out, \
+        f"Expected validation error message, got:\nstdout: {out}\nstderr: {err}"
+    print("  PASS: train.py validates n_embd >= n_head")
+
+
+def test_validation_train_fast():
+    """Test that train_fast.py validates n_embd >= n_head."""
+    try:
+        import fastops
+    except ImportError:
+        print("  SKIP: fastops not available")
+        return
+    
+    # Should fail with n_embd < n_head
+    rc, out, err = run([sys.executable, 'train_fast.py', '--n-embd', '2', '--n-head', '4', '--num-steps', '1'])
+    assert rc != 0, f"train_fast.py should have failed with n_embd=2, n_head=4 (rc={rc})"
+    assert "must be >= n_head" in err or "must be >= n_head" in out, \
+        f"Expected validation error message, got:\nstdout: {out}\nstderr: {err}"
+    print("  PASS: train_fast.py validates n_embd >= n_head")
+
+
+def test_validation_roofline():
+    """Test that roofline.py handles invalid configs gracefully."""
+    # Should skip invalid config but not crash
+    rc, out, err = run([sys.executable, 'roofline.py', '--n-embd', '2', '--n-head', '4', '--no-measure'])
+    assert rc == 0 or "ERROR: Config" in out or "must be >= n_head" in out, \
+        f"roofline.py should handle n_embd=2, n_head=4 gracefully (rc={rc}):\nstdout: {out}\nstderr: {err}"
+    if rc == 0:
+        assert "ERROR: Config" in out or "skipped" in out, \
+            f"Expected validation error/skip message, got:\n{out}"
+    print("  PASS: roofline.py handles invalid n_embd/n_head gracefully")
+
+
 def main():
     parser = argparse.ArgumentParser(description='microgpt smoke tests')
     parser.add_argument('--quick', action='store_true',
@@ -471,6 +542,8 @@ def main():
         ('Validation: zero learning_rate', test_validation_zero_learning_rate),
         ('Validation: n_embd divisibility', test_validation_n_embd_not_divisible),
         ('Validation: fast path', test_validation_fast_path),
+        ('Inference flags (ref)', test_inference_cli_flags_reference),
+        ('Inference flags (fast)', test_inference_cli_flags_fast),
         ('Roofline analytical',   test_roofline_analytical),
         ('Roofline all-configs',  test_roofline_all_configs),
         ('Validation train.py',   test_validation_train),

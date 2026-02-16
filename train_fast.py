@@ -16,6 +16,17 @@ _DA = _array.array      # shorthand for array.array constructor
 
 import fastops as _C
 
+# Model/Optimizer Constants (grouped for visibility and documentation)
+# These are architectural choices and numerical stability parameters that are typically fixed.
+# They can be modified here if needed for experimentation.
+# Note: RMSNorm epsilon (1e-5) is hardcoded in the C extension (fastops.c)
+
+WEIGHT_INIT_STD = 0.02        # Standard deviation for weight initialization (Gaussian)
+MLP_HIDDEN_DIM_MULTIPLIER = 4 # MLP hidden dimension as a multiple of n_embd (standard is 4x)
+ADAM_BETA1 = 0.9              # Adam optimizer momentum parameter (first moment)
+ADAM_BETA2 = 0.95             # Adam optimizer momentum parameter (second moment)
+ADAM_EPS = 1e-8               # Adam epsilon for numerical stability
+
 # CLI arguments
 parser = argparse.ArgumentParser()
 parser.add_argument('--n-embd', type=int, default=16, help='Number of channels in the Transformer')
@@ -26,6 +37,8 @@ parser.add_argument('--n-head', type=int, default=4, help='Number of attention h
 parser.add_argument('--learning-rate', type=float, default=1e-2, help='Learning rate')
 parser.add_argument('--grad-clip', type=float, default=0.0, help='Max gradient norm (0 = disabled)')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
+parser.add_argument('--temperature', type=float, default=0.5, help='Sampling temperature for inference; typical range (0, 1], lower = less random')
+parser.add_argument('--num-samples', type=int, default=20, help='Number of samples to generate during inference')
 parser.add_argument('--val-split', type=float, default=0.0, help='Fraction of data for validation (0 = no validation)')
 parser.add_argument('--val-every', type=int, default=50, help='Evaluate validation loss every N steps')
 parser.add_argument('--early-stop-patience', type=int, default=0, help='Stop after N evaluations without improvement (0 = no early stopping)')
@@ -147,7 +160,7 @@ class FlatParam:
     """
     __slots__ = ('data', 'grad', 'm', 'v', 'nout', 'nin')
 
-    def __init__(self, nout, nin, std=0.02):
+    def __init__(self, nout, nin, std=WEIGHT_INIT_STD):
         self.nout, self.nin = nout, nin
         self.data = _DA('d', [random.gauss(0, std) for _ in range(nout * nin)])
         self.grad = _DA('d', bytes(nout * nin * 8))
@@ -164,8 +177,8 @@ for i in range(n_layer):
     state_dict[f'layer{i}.attn_wk'] = FlatParam(n_embd, n_embd)
     state_dict[f'layer{i}.attn_wv'] = FlatParam(n_embd, n_embd)
     state_dict[f'layer{i}.attn_wo'] = FlatParam(n_embd, n_embd, std=0)
-    state_dict[f'layer{i}.mlp_fc1'] = FlatParam(4 * n_embd, n_embd)
-    state_dict[f'layer{i}.mlp_fc2'] = FlatParam(n_embd, 4 * n_embd, std=0)
+    state_dict[f'layer{i}.mlp_fc1'] = FlatParam(MLP_HIDDEN_DIM_MULTIPLIER * n_embd, n_embd)
+    state_dict[f'layer{i}.mlp_fc2'] = FlatParam(n_embd, MLP_HIDDEN_DIM_MULTIPLIER * n_embd, std=0)
 params = list(state_dict.values())
 num_params = sum(p.nout * p.nin for p in params)
 print(f"num params: {num_params}")
@@ -318,7 +331,7 @@ def gpt_inference(token_id: int, pos_id: int, keys: list[list],
 
 # Adam optimizer
 learning_rate = args.learning_rate
-beta1, beta2, eps_adam = 0.9, 0.95, 1e-8
+beta1, beta2, eps_adam = ADAM_BETA1, ADAM_BETA2, ADAM_EPS
 
 # Validation evaluation function
 def evaluate_validation():
@@ -412,11 +425,11 @@ for step in range(args.num_steps):
 print(f"mean loss last 50 steps: {sum(lossf_history[-50:]) / len(lossf_history[-50:]):.4f}")
 print(f"training time: {time.perf_counter() - t_start:.2f}s")
 
-# Inference: generate 20 samples (no autograd)
-temperature = 0.5
+# Inference: generate samples (no autograd)
+temperature = args.temperature
 generated_samples = []
 print("\n--- inference ---")
-for sample_idx in range(20):
+for sample_idx in range(args.num_samples):
     keys_cache, values_cache = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
     token_id = BOS
     sample_chars = []
@@ -443,6 +456,8 @@ run_metrics = {
         'n_embd': n_embd, 'n_layer': n_layer, 'n_head': n_head,
         'block_size': block_size, 'num_steps': args.num_steps,
         'learning_rate': args.learning_rate,
+        'temperature': args.temperature,
+        'num_samples': args.num_samples,
         'val_split': args.val_split,
         'val_every': args.val_every,
         'early_stop_patience': args.early_stop_patience,
