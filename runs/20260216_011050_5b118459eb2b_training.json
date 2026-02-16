@@ -1,0 +1,67 @@
+{
+  "hyperparams": {
+    "n_embd": 16,
+    "n_layer": 1,
+    "n_head": 4,
+    "block_size": 8,
+    "num_steps": 3,
+    "learning_rate": 0.01,
+    "val_split": 0.1,
+    "val_every": 50,
+    "early_stop_patience": 0
+  },
+  "num_params": 4064,
+  "vocab_size": 27,
+  "num_docs": 32033,
+  "num_train_docs": 28830,
+  "num_val_docs": 3203,
+  "loss_history": [
+    3.288953194090887,
+    3.272993209444529,
+    3.279480772426858
+  ],
+  "val_loss_history": [],
+  "loss_final": 3.279480772426858,
+  "loss_mean_last_50": 3.2804757253207577,
+  "training_time_seconds": 0.0718,
+  "generated_samples": [
+    "rkhufsan",
+    "thnye",
+    "zmlwremp",
+    "kuwhzdcm",
+    "gqjrplb",
+    "bkovlcpi",
+    "oavdsifr",
+    "zk",
+    "gpflidxh",
+    "zpjhcleo",
+    "lhd",
+    "uiygwzzx",
+    "huvodcpm",
+    "nrepyyxs",
+    "fxltlwfd",
+    "hpihxndz",
+    "jlikrhww",
+    "qvpotfxq",
+    "qcmvypro",
+    ""
+  ],
+  "has_c_ext": false,
+  "_meta": {
+    "type": "training",
+    "timestamp": "2026-02-16T01:10:50.916233+00:00",
+    "timestamp_local": "20260216_011050",
+    "machine": {
+      "machine_id": "5b118459eb2b",
+      "hostname": "runnervmjduv7",
+      "platform": "Linux-6.14.0-1017-azure-x86_64-with-glibc2.39",
+      "python": "3.12.3"
+    },
+    "git": {
+      "commit": "0c0c4162eac38df08c61d87bae8414d0551e0f95",
+      "commit_short": "0c0c4162",
+      "branch": "copilot/add-train-validation-split",
+      "dirty": false
+    }
+  }
+}
