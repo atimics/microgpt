@@ -13,3 +13,4 @@ charts/
 runs/
 *.model.json
 model.json
+tokenizer.json

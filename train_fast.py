@@ -50,6 +50,9 @@ parser.add_argument('--load-model', type=str, default=None, help='Path to load a
 parser.add_argument('--inference-only', action='store_true', help='Skip training, only run inference (requires --load-model)')
 parser.add_argument('--data', type=str, action='append', help='Text file(s) or glob pattern(s) to load (can be specified multiple times)')
 parser.add_argument('--data-dir', type=str, help='Directory containing text files to load')
+parser.add_argument('--tokenizer', type=str, default='char', choices=['char', 'bpe'], help='Tokenizer type: char (character-level) or bpe (Byte Pair Encoding)')
+parser.add_argument('--bpe-vocab-size', type=int, default=256, help='Vocabulary size for BPE tokenizer')
+parser.add_argument('--bpe-model', type=str, default='tokenizer.json', help='Path to save/load BPE model')
 args = parser.parse_args()
 if args.inference_only and not args.load_model:
     parser.error("--inference-only requires --load-model")
@@ -168,15 +171,49 @@ else:
     train_docs = docs
     val_docs = []
 
-# Tokenizer: simple character-level tokenization with a BOS token delimiter
-chars = ['<BOS>'] + sorted(set(''.join(docs)))
-vocab_size = len(chars)
-stoi = { ch:i for i, ch in enumerate(chars) } # string to integer
-itos = { i:ch for i, ch in enumerate(chars) } # integer to string
-BOS = stoi['<BOS>']
-train_docs_tokenized = [[BOS] + [stoi[ch] for ch in doc] + [BOS] for doc in train_docs]
-val_docs_tokenized = [[BOS] + [stoi[ch] for ch in doc] + [BOS] for doc in val_docs] if val_docs else []
-print(f"vocab size: {vocab_size}, num docs: {len(docs)}")
+# Tokenizer: character-level or BPE based on --tokenizer argument
+if args.tokenizer == 'bpe':
+    # BPE tokenization
+    from tokenizer import BPETokenizer
+
+    # Try to load existing BPE model, otherwise train a new one
+    bpe = BPETokenizer()
+    if os.path.exists(args.bpe_model):
+        print(f"Loading BPE model from {args.bpe_model}")
+        bpe.load(args.bpe_model)
+    else:
+        print(f"Training BPE tokenizer with vocab_size={args.bpe_vocab_size}")
+        bpe.train(docs, vocab_size=args.bpe_vocab_size, verbose=True)
+        bpe.save(args.bpe_model)
+        print(f"BPE model saved to {args.bpe_model}")
+
+    vocab_size = bpe.vocab_size
+    BOS = bpe.bos_id
+
+    # Tokenize documents with BPE
+    def _bpe_tokenize(doc_list):
+        return [[BOS] + bpe.encode(doc) + [BOS] for doc in doc_list]
+    train_docs_tokenized = _bpe_tokenize(train_docs)
+    val_docs_tokenized = _bpe_tokenize(val_docs) if val_docs else []
+
+    # For inference, we need the tokenizer object
+    tokenizer_obj = bpe
+
+    print(f"vocab size: {vocab_size}, num docs: {len(docs)}, tokenizer: BPE")
+else:
+    # Character-level tokenization (original)
+    chars = ['<BOS>'] + sorted(set(''.join(docs)))
+    vocab_size = len(chars)
+    stoi = { ch:i for i, ch in enumerate(chars) } # string to integer
+    itos = { i:ch for i, ch in enumerate(chars) } # integer to string
+    BOS = stoi['<BOS>']
+    train_docs_tokenized = [[BOS] + [stoi[ch] for ch in doc] + [BOS] for doc in train_docs]
+    val_docs_tokenized = [[BOS] + [stoi[ch] for ch in doc] + [BOS] for doc in val_docs] if val_docs else []
+
+    # For inference, store char mapping
+    tokenizer_obj = {'type': 'char', 'itos': itos}
+
+    print(f"vocab size: {vocab_size}, num docs: {len(docs)}, tokenizer: char")
 
 # Autograd engine: vector-level (each node is a 1D vector, not a scalar)
 class Tensor:
@@ -618,7 +655,7 @@ print("\n--- inference ---")
 for sample_idx in range(args.num_samples):
     keys_cache, values_cache = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
     token_id = BOS
-    sample_chars = []
+    sample_token_ids = []
     for pos_id in range(block_size):
         logits = gpt_inference(token_id, pos_id, keys_cache, values_cache)
         logits_t = [l / temperature for l in logits]
@@ -629,8 +666,14 @@ for sample_idx in range(args.num_samples):
         token_id = random.choices(range(vocab_size), weights=probs)[0]
         if token_id == BOS:
             break
-        sample_chars.append(itos[token_id])
-    sample_str = ''.join(sample_chars)
+        sample_token_ids.append(token_id)
+    
+    # Decode based on tokenizer type
+    if args.tokenizer == 'bpe':
+        sample_str = tokenizer_obj.decode(sample_token_ids)
+    else:
+        sample_str = ''.join(tokenizer_obj['itos'][tid] for tid in sample_token_ids)
+    
     generated_samples.append(sample_str)
     print(f"sample {sample_idx+1}: {sample_str}")
 

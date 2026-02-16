@@ -25,6 +25,19 @@ python train.py --num-steps 500
 python train.py --n-embd 32 --n-layer 2 --num-steps 1000
 ```
 
+### BPE Tokenization (Advanced)
+
+```bash
+# Train with BPE tokenizer (like GPT-2/3/4)
+python train.py --tokenizer bpe --bpe-vocab-size 256 --num-steps 500
+
+# Use character-level tokenizer (default)
+python train.py --tokenizer char --num-steps 500
+
+# Save/load BPE model
+python train.py --tokenizer bpe --bpe-model my_tokenizer.json
+```
+
 ### Fast Training (with C extension)
 
 ```bash
@@ -33,6 +46,9 @@ python setup.py build_ext --inplace
 
 # Train with C acceleration (10-30x faster)
 python train_fast.py --num-steps 500
+
+# Fast training with BPE
+python train_fast.py --tokenizer bpe --bpe-vocab-size 256 --num-steps 500
 ```
 
 ### Inference
@@ -76,7 +92,7 @@ python benchmark.py compare baseline.json current.json
 - **`train.py`**: Reference pure Python implementation (~735 lines)
   - Custom autograd engine (vector-level, not scalar)
   - GPT architecture with RMSNorm, square ReLU, no biases
-  - Character-level tokenization
+  - Character-level or BPE tokenization
   - Adam optimizer
   - Model serialization (`--save-model`)
   
@@ -90,6 +106,12 @@ python benchmark.py compare baseline.json current.json
   - Temperature, top-k, and top-p (nucleus) sampling
   - Interactive and streaming modes
   - Compatible with both pure Python and C backends
+
+- **`tokenizer.py`**: Pure Python BPE tokenizer (~270 lines)
+  - Byte Pair Encoding (used in GPT-2/3/4)
+  - Train on custom vocabulary
+  - Save/load trained models
+  - Educational implementation with zero dependencies
 
 - **`fastops.c`**: C extension for performance (~630 lines)
   - Matrix operations (matvec, linear backward)

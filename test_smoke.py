@@ -514,54 +514,82 @@ def test_inference_script():
     # Train a small model and save it
     with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
         model_path = f.name
-    
+
     try:
-        rc, out, err = run([sys.executable, 'train.py', '--num-steps', '20', '--seed', '42', 
+        rc, out, err = run([sys.executable, 'train.py', '--num-steps', '20', '--seed', '42',
                             '--save-model', model_path])
         assert rc == 0, f"train.py with --save-model failed (rc={rc}):\n{err}"
         assert os.path.exists(model_path), f"Model file not created at {model_path}"
-        
+
         # Test basic inference
-        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path,
                             '--num-samples', '3', '--seed', '100'])
         assert rc == 0, f"inference.py basic test failed (rc={rc}):\n{err}"
         assert 'Sample 1:' in out, "Missing sample 1 in output"
         assert 'Sample 2:' in out, "Missing sample 2 in output"
         assert 'Sample 3:' in out, "Missing sample 3 in output"
-        
+
         # Test temperature parameter
-        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path,
                             '--temperature', '0.5', '--num-samples', '2', '--seed', '100'])
         assert rc == 0, f"inference.py with temperature failed (rc={rc}):\n{err}"
         assert 'temperature=0.5' in out, "Temperature not shown in output"
-        
+
         # Test top-k sampling
-        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path,
                             '--top-k', '5', '--num-samples', '2', '--seed', '100'])
         assert rc == 0, f"inference.py with top-k failed (rc={rc}):\n{err}"
         assert 'top_k=5' in out, "Top-k not shown in output"
-        
+
         # Test top-p sampling
-        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path,
                             '--top-p', '0.9', '--num-samples', '2', '--seed', '100'])
         assert rc == 0, f"inference.py with top-p failed (rc={rc}):\n{err}"
         assert 'top_p=0.9' in out, "Top-p not shown in output"
-        
+
         # Test max-length parameter
-        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path,
                             '--max-length', '3', '--num-samples', '2', '--seed', '100'])
         assert rc == 0, f"inference.py with max-length failed (rc={rc}):\n{err}"
-        
+
         # Test streaming output
-        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path, 
+        rc, out, err = run([sys.executable, 'inference.py', '--model', model_path,
                             '--stream', '--num-samples', '2', '--seed', '100'])
         assert rc == 0, f"inference.py with streaming failed (rc={rc}):\n{err}"
     finally:
         # Clean up
         if os.path.exists(model_path):
             os.unlink(model_path)
-    
+
     print("  PASS: inference script (all modes)")
+
+
+def test_bpe_tokenizer():
+    """Test BPE tokenizer integration with train.py and train_fast.py."""
+    # Clean up tokenizer.json if it exists
+    if os.path.exists('tokenizer.json'):
+        os.unlink('tokenizer.json')
+
+    # Test train.py with BPE
+    rc, out, err = run([sys.executable, 'train.py', '--tokenizer', 'bpe', '--bpe-vocab-size', '40',
+                        '--num-steps', '3', '--no-archive'])
+    assert rc == 0, f"train.py with BPE failed (rc={rc}):\n{err}\n{out}"
+    assert 'tokenizer: BPE' in out, "Missing BPE tokenizer indicator in output"
+    assert 'Training BPE tokenizer' in out or 'Loading BPE model' in out, "No BPE training/loading message"
+    assert os.path.exists('tokenizer.json'), "BPE model file not created"
+
+    # Test train_fast.py with BPE (should load existing model)
+    rc, out, err = run([sys.executable, 'train_fast.py', '--tokenizer', 'bpe', '--bpe-vocab-size', '40',
+                        '--num-steps', '3'])
+    assert rc == 0, f"train_fast.py with BPE failed (rc={rc}):\n{err}\n{out}"
+    assert 'tokenizer: BPE' in out, "Missing BPE tokenizer indicator in output"
+    assert 'Loading BPE model' in out, "Should load existing BPE model"
+
+    # Clean up
+    if os.path.exists('tokenizer.json'):
+        os.unlink('tokenizer.json')
+
+    print("  PASS: BPE tokenizer integration")
 
 
 def main():
@@ -605,6 +633,7 @@ def main():
         ('Validation train.py',   test_validation_train),
         ('Validation train_fast.py', test_validation_train_fast),
         ('Validation roofline.py', test_validation_roofline),
+        ('BPE tokenizer',         test_bpe_tokenizer),
     ]
 
     if not args.quick:
