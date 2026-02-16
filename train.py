@@ -104,15 +104,13 @@ def load_dataset_from_sources(data_args, data_dir_arg):
     Returns:
         List of text documents (one per line from all files)
     """
-    import glob as glob_module
-    
     all_files = []
     
     # Collect files from --data arguments (supports glob patterns)
     if data_args:
         for pattern in data_args:
             # Try glob expansion
-            matches = glob_module.glob(pattern)
+            matches = glob.glob(pattern)
             if matches:
                 all_files.extend(matches)
             elif os.path.exists(pattern):
@@ -127,7 +125,7 @@ def load_dataset_from_sources(data_args, data_dir_arg):
             print(f"Error: --data-dir '{data_dir_arg}' is not a directory", file=sys.stderr)
             sys.exit(1)
         # Find all .txt files in the directory (not recursive)
-        dir_files = glob_module.glob(os.path.join(data_dir_arg, '*.txt'))
+        dir_files = glob.glob(os.path.join(data_dir_arg, '*.txt'))
         all_files.extend(dir_files)
     
     # Backward compatibility: if no --data or --data-dir specified, use input.txt
