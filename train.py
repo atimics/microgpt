@@ -40,6 +40,9 @@ parser.add_argument('--learning-rate', type=float, default=1e-2, help='Learning 
 parser.add_argument('--grad-clip', type=float, default=0.0, help='Max gradient norm (0 = disabled)')
 parser.add_argument('--seed', type=int, default=42, help='Random seed')
 parser.add_argument('--no-archive', action='store_true', help='Skip auto-archive to runs/')
+parser.add_argument('--val-split', type=float, default=0.0, help='Fraction of data for validation (0 = no validation)')
+parser.add_argument('--val-every', type=int, default=50, help='Evaluate validation loss every N steps')
+parser.add_argument('--early-stop-patience', type=int, default=0, help='Stop after N evaluations without improvement (0 = no early stopping)')
 args = parser.parse_args()
 n_embd, block_size, n_layer, n_head = args.n_embd, args.block_size, args.n_layer, args.n_head
 if n_embd < n_head:
@@ -71,6 +74,17 @@ if not os.path.exists('input.txt'):
 with open('input.txt') as f:
     docs = [l.strip() for l in f.read().strip().split('\n') if l.strip()] # list[str] of documents
 random.shuffle(docs)
+# Split into train and validation sets (deterministic with seed)
+if args.val_split > 0.0:
+    val_size = int(len(docs) * args.val_split)
+    if val_size == 0:
+        val_size = 1  # ensure at least 1 validation document
+    train_docs = docs[val_size:]
+    val_docs = docs[:val_size]
+    print(f"split: {len(train_docs)} train docs, {len(val_docs)} val docs")
+else:
+    train_docs = docs
+    val_docs = []
 docs_tokenized = None # pre-tokenized after stoi is built
 
 # Tokenizer: simple character-level tokenization with a BOS token delimiter
@@ -79,7 +93,8 @@ vocab_size = len(chars)
 stoi = { ch:i for i, ch in enumerate(chars) } # string to integer
 itos = { i:ch for i, ch in enumerate(chars) } # integer to string
 BOS = stoi['<BOS>']
-docs_tokenized = [[BOS] + [stoi[ch] for ch in doc] + [BOS] for doc in docs]
+train_docs_tokenized = [[BOS] + [stoi[ch] for ch in doc] + [BOS] for doc in train_docs]
+val_docs_tokenized = [[BOS] + [stoi[ch] for ch in doc] + [BOS] for doc in val_docs] if val_docs else []
 print(f"vocab size: {vocab_size}, num docs: {len(docs)}")
 
 # Autograd engine: vector-level (each node is a 1D vector, not a scalar)
@@ -640,13 +655,33 @@ def gpt_inference(token_id: int, pos_id: int, keys: list[list],
 learning_rate = args.learning_rate
 beta1, beta2, eps_adam = 0.9, 0.95, 1e-8
 
+# Validation evaluation function
+def evaluate_validation():
+    """Evaluate loss on validation set without updating gradients."""
+    if not val_docs_tokenized:
+        return None
+    val_losses = []
+    for doc_tokens in val_docs_tokenized:
+        n = min(block_size, len(doc_tokens) - 1)
+        keys_cache, values_cache = [[] for _ in range(n_layer)], [[] for _ in range(n_layer)]
+        doc_losses = []
+        for pos_id in range(n):
+            token_id, target_id = doc_tokens[pos_id], doc_tokens[pos_id + 1]
+            logits = gpt(token_id, pos_id, keys_cache, values_cache)
+            doc_losses.append(cross_entropy(logits, target_id))
+        val_losses.append(mean_loss(doc_losses).data[0])
+    return sum(val_losses) / len(val_losses)
+
 # Training loop
 lossf_history = []
+val_lossf_history = []
+best_val_loss = float('inf')
+patience_counter = 0
 t_start = time.perf_counter()
 for step in range(args.num_steps):
 
     # Take a single training document (pre-tokenized, surrounded with BOS on both sides)
-    tokens = docs_tokenized[step % len(docs)]
+    tokens = train_docs_tokenized[step % len(train_docs)]
     n = min(block_size, len(tokens) - 1)
 
     # Zero gradients on all parameters
@@ -694,7 +729,30 @@ for step in range(args.num_steps):
                 pd[j] -= lr_t * (pm[j] / bc1) / ((pv[j] / bc2) ** 0.5 + eps_adam)
 
     lossf_history.append(loss.data[0])
-    print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}")
+    
+    # Evaluate on validation set periodically
+    val_loss_str = ""
+    if val_docs_tokenized and (step + 1) % args.val_every == 0:
+        val_loss = evaluate_validation()
+        val_lossf_history.append(val_loss)
+        val_loss_str = f" | val_loss {val_loss:.4f}"
+        
+        # Early stopping logic
+        if args.early_stop_patience > 0:
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= args.early_stop_patience:
+                    print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}{val_loss_str}")
+                    print(f"Early stopping: validation loss did not improve for {args.early_stop_patience} evaluations")
+                    # Note: lossf_history already has correct length (step+1), trim is defensive
+                    # val_lossf_history is correct since it's only appended during evaluation
+                    lossf_history = lossf_history[:step+1]
+                    break
+    
+    print(f"step {step+1:4d} / {args.num_steps:4d} | loss {loss.data[0]:.4f}{val_loss_str}")
 print(f"mean loss last 50 steps: {sum(lossf_history[-50:]) / len(lossf_history[-50:]):.4f}") # ~usable for basic kwarg tuning
 print(f"training time: {time.perf_counter() - t_start:.2f}s") # ~usable for basic performance benchmarking
 
@@ -729,11 +787,17 @@ run_metrics = {
         'n_embd': n_embd, 'n_layer': n_layer, 'n_head': n_head,
         'block_size': block_size, 'num_steps': args.num_steps,
         'learning_rate': args.learning_rate,
+        'val_split': args.val_split,
+        'val_every': args.val_every,
+        'early_stop_patience': args.early_stop_patience,
     },
     'num_params': num_params,
     'vocab_size': vocab_size,
     'num_docs': len(docs),
+    'num_train_docs': len(train_docs),
+    'num_val_docs': len(val_docs),
     'loss_history': lossf_history,
+    'val_loss_history': val_lossf_history,
     'loss_final': lossf_history[-1],
     'loss_mean_last_50': mean_loss_last_50,
     'training_time_seconds': round(training_time, 4),
